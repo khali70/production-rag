@@ -4,6 +4,9 @@
 # Run from the repo root:  bash prompts/db-search-tests.sh
 # Output tee'd to $TMPDIR/rag-audit/search-results.txt
 #
+# Extra flags for every case go in SEARCH_EXTRA, e.g. to rerank all queries:
+#   SEARCH_EXTRA="--rerank" bash prompts/db-search-tests.sh
+#
 # How to read a result:
 #   tier=policy rank=100 trust=normal  →  authoritative
 #   tier=advisory rank=70              →  informational, does not override policy
@@ -19,6 +22,7 @@
 set -euo pipefail
 
 AS_OF="2026-09-21"
+SEARCH_EXTRA="${SEARCH_EXTRA:-}"
 OUT="$TMPDIR/rag-audit/search-results.txt"
 mkdir -p "$TMPDIR/rag-audit"
 
@@ -26,11 +30,11 @@ q() {
   local id="$1"; local user="$2"; local flags="$3"; local query="$4"
   echo ""
   echo "================================================================"
-  echo "[$id] USER=$user FLAGS=$flags"
+  echo "[$id] USER=$user FLAGS=$flags $SEARCH_EXTRA"
   echo "QUERY: $query"
   echo "================================================================"
   # shellcheck disable=SC2086
-  pnpm --filter api search --user "$user" --as-of "$AS_OF" $flags "$query" 2>&1 || true
+  pnpm --filter api search --user "$user" --as-of "$AS_OF" $flags $SEARCH_EXTRA "$query" 2>&1 || true
 }
 
 exec > >(tee "$OUT") 2>&1
@@ -62,40 +66,35 @@ echo "## GROUP A — Vendor Approval Policy (APX-PROC-POL-014)"
 # CORRECT ANSWER      : "USD 50,000 or more"
 # PASS SIGNAL         : preview contains "50,000" and source is v3.0 (NOT v2.1)
 # FAIL SIGNAL         : preview shows "100,000" (old retired threshold)
-#  "--k 5 --order relevance --statuses current" \
-q A1a u-eng-104 \
+q A1a u-eng-104 "--k 5 --order relevance --statuses current" \
   "What is the minimum annual spend that makes a supplier count as an enterprise vendor?"
 
 # ── A1b ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [2. Scope and definition]
 # CORRECT ANSWER      : "USD 50,000 or more"
 # PASS SIGNAL         : same as A1a, different user (hr-207 has all_employees access)
-#  "--k 5 --order relevance --statuses current" \
-q A1b u-hr-207  \
+q A1b u-hr-207 "--k 5 --order relevance --statuses current" \
   "At what dollar amount does a vendor relationship require the full enterprise approval process?"
 
 # ── A1c ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [2. Scope and definition]
 # CORRECT ANSWER      : "USD 50,000 or more"
 # PASS SIGNAL         : --order precedence must still rank v3.0 first (rank=100)
-#  "--k 5 --order precedence --statuses current" \
-q A1c u-proc-310\
+q A1c u-proc-310 "--k 5 --order precedence --statuses current" \
   "What spend threshold triggers the enterprise vendor approval workflow?"
 
 # ── A1d  (PARAPHRASE of A1a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [2. Scope and definition]
 # CORRECT ANSWER      : "USD 50,000"
 # PASS SIGNAL         : result must not change materially from A1a
-#  "--k 5 --order relevance --statuses current" \
-q A1d u-eng-104 \
+q A1d u-eng-104 "--k 5 --order relevance --statuses current" \
   "From what annual contract value must we run the complete vendor onboarding procedure?"
 
 # ── A1e  (retired doc MUST NOT appear without --statuses retired) ─────────────
 # EXPECTED BEHAVIOUR  : top result is v3.0 confirming $50k; v2.1 must not appear
 # CORRECT ANSWER      : "No — the current threshold is USD 50,000 (v3.0)"
 # FAIL SIGNAL         : APX-PROC-POL-014 v2.1 surfaces in results
-#  "--k 5 --order relevance --statuses current" \
-q A1e u-proc-310\
+q A1e u-proc-310 "--k 5 --order relevance --statuses current" \
   "Does the hundred-thousand-dollar threshold still apply to vendor classification?"
 
 # ── A1f  (historical retrieval — v2.1 SHOULD now appear, labelled retired) ───
@@ -103,46 +102,40 @@ q A1e u-proc-310\
 #   ALSO IN RESULTS   : APX-PROC-POL-014 v2.1  status=retired  (historical context)
 # CORRECT ANSWER      : old threshold was USD 100,000; superseded by v3.0
 # PASS SIGNAL         : v2.1 appears with status=retired and v3.0 is still ranked above it
-#  "--k 5 --order precedence --statuses current,retired" \
-q A1f u-proc-310\
+q A1f u-proc-310 "--k 5 --order precedence --statuses current,retired" \
   "What was the old vendor spend threshold before the policy was updated?"
 
 # ── A2a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [3. Required approval process]
 # CORRECT ANSWER      : "REQUIRED — cannot be replaced by business-owner acceptance"
 # FAIL SIGNAL         : preview implies InfoSec is optional or recommended only
-#  "--k 5 --order relevance --statuses current" \
-q A2a u-eng-104 \
+q A2a u-eng-104 "--k 5 --order relevance --statuses current" \
   "Is the Information Security review optional or required when onboarding a new vendor with system access?"
 
 # ── A2b ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [3. Required approval process]
 # CORRECT ANSWER      : "No — InfoSec review cannot be replaced by business-owner acceptance"
 # FAIL SIGNAL         : result suggests business owner can waive the review
-#  "--k 5 --order relevance --statuses current" \
-q A2b u-proc-310\
+q A2b u-proc-310 "--k 5 --order relevance --statuses current" \
   "Can a business owner sign off on security risk instead of Information Security doing a formal review?"
 
 # ── A2c  (PARAPHRASE of A2a/A2b) ─────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [3. Required approval process]
 # CORRECT ANSWER      : Information Security must review; department head cannot waive it
-#  "--k 5 --order relevance --statuses current" \
-q A2c u-hr-207  \
+q A2c u-hr-207 "--k 5 --order relevance --statuses current" \
   "Who must approve the security aspects of a new vendor contract — can the department head waive that review?"
 
 # ── A3a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [5. Exceptions]
 # CORRECT ANSWER      : Procurement Director + accountable control owner, in writing.
 #                       Exception does NOT remove legal/security/regulatory obligations.
-#  "--k 5 --order relevance --statuses current" \
-q A3a u-proc-310\
+q A3a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What written approvals are needed to grant an emergency exception to the vendor approval process?"
 
 # ── A3b ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  [5. Exceptions]
 # CORRECT ANSWER      : Procurement Director + accountable control owner (written approval)
-#  "--k 5 --order relevance --statuses current" \
-q A3b u-eng-104 \
+q A3b u-eng-104 "--k 5 --order relevance --statuses current" \
   "If we need a vendor urgently and cannot complete all approval stages, who has to sign off?"
 
 # ── A4a ──────────────────────────────────────────────────────────────────────
@@ -152,8 +145,7 @@ q A3b u-eng-104 \
 #                       (c) standard template, (d) no changes to data/liability/term/
 #                       governing law/security, AND (e) a current Legal advisory allows it.
 #                       A separate lawyer signature is NOT required in that narrow case.
-#  "--k 5 --order relevance --statuses current" \
-q A4a u-proc-310\
+q A4a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Can we skip a lawyer signature for a low-risk vendor renewal by using a standard contract template?"
 
 # ── A4b ──────────────────────────────────────────────────────────────────────
@@ -161,8 +153,7 @@ q A4a u-proc-310\
 #                       APX-PROC-POL-014 v3.0  [3. Legal stage]
 # CORRECT ANSWER      : When all template-checklist conditions are met (low-risk, <$100k,
 #                       no non-standard clauses, no new data access, no supplier amendments)
-#  "--k 5 --order relevance --statuses current" \
-q A4b u-hr-207  \
+q A4b u-hr-207 "--k 5 --order relevance --statuses current" \
   "When does the Legal review stage not require a separate lawyer to sign the agreement?"
 
 # ── A5a  (version conflict — precedence ordering) ────────────────────────────
@@ -170,15 +161,13 @@ q A4b u-hr-207  \
 #   ALSO IN RESULTS   : APX-PROC-POL-014 v2.1  rank lower  status=retired
 # CORRECT ANSWER      : v3.0 is current; it supersedes v2.1 which was retired 2026-07-01
 # PASS SIGNAL         : v3.0 ranked above v2.1 even when both appear
-#  "--k 5 --order precedence --statuses current,retired" \
-q A5a u-proc-310\
+q A5a u-proc-310 "--k 5 --order precedence --statuses current,retired" \
   "Which vendor approval policy is currently in force and what did it replace?"
 
 # ── A5b  (same query, relevance ordering — result should match A5a) ───────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0
 # PASS SIGNAL         : result does not change materially vs A5a
-#  "--k 5 --order relevance --statuses current,retired" \
-q A5b u-proc-310\
+q A5b u-proc-310 "--k 5 --order relevance --statuses current,retired" \
   "Which vendor approval policy is currently in force and what did it replace?"
 
 
@@ -200,48 +189,42 @@ echo "## GROUP B — Procurement Approval Matrix (APX-PROC-MTX-006)"
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix]
 # CORRECT ANSWER      : Budget owner + Procurement reviewer
 #                       ($40k is below $50k → row 1 of matrix)
-#  "--k 5 --order relevance --statuses current" \
-q B1a u-proc-310\
+q B1a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Who needs to approve a vendor purchase of forty thousand dollars?"
 
 # ── B2a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix]
 # CORRECT ANSWER      : Budget owner + Dept VP + Procurement Director + Finance Controller
 #                       ($150k falls in $50k–$249,999 tier)
-#  "--k 5 --order relevance --statuses current" \
-q B2a u-proc-310\
+q B2a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What approvals are required for a vendor contract worth one hundred and fifty thousand dollars a year?"
 
 # ── B2b  (PARAPHRASE of B2a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix]
 # CORRECT ANSWER      : same as B2a — $200k is in $50k–$249,999 tier
 # PASS SIGNAL         : result does not change materially vs B2a
-#  "--k 5 --order relevance --statuses current" \
-q B2b u-eng-104 \
+q B2b u-eng-104 "--k 5 --order relevance --statuses current" \
   "A new software vendor will cost us about 200k annually. Which managers or executives have to sign off?"
 
 # ── B3a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix]
 # CORRECT ANSWER      : Budget owner + Dept VP + Procurement Director + CFO
 #                       ($500k falls in $250k–$999,999 tier)
-#  "--k 5 --order relevance --statuses current" \
-q B3a u-proc-310\
+q B3a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Who must approve a vendor engagement that will cost around five hundred thousand dollars?"
 
 # ── B4a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix]
 # CORRECT ANSWER      : Budget owner + Dept VP + Procurement Director + CFO + COO
 #                       ($1M+ tier)
-#  "--k 5 --order relevance --statuses current" \
-q B4a u-proc-310\
+q B4a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What is the approval chain for a multi-million-dollar vendor contract?"
 
 # ── B5a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-PROC-MTX-006 v1.2  [Approval matrix — regulated row]
 # CORRECT ANSWER      : Yes — CFO + General Counsel required regardless of spend amount.
 #                       Security and compliance review also mandatory.
-#  "--k 5 --order relevance --statuses current" \
-q B5a u-proc-310\
+q B5a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Does a regulated or high-risk vendor always need the CFO and General Counsel regardless of how much we spend?"
 
 # ── B6a  (conflict: matrix supersedes old embedded thresholds) ────────────────
@@ -250,8 +233,7 @@ q B5a u-proc-310\
 # CORRECT ANSWER      : The matrix (v1.2, effective 2026-08-15) is the authoritative
 #                       threshold table and supersedes any figures embedded in policy copies.
 # FAIL SIGNAL         : retired v2.1 threshold table wins
-#  "--k 5 --order precedence --statuses current,retired" \
-q B6a u-proc-310\
+q B6a u-proc-310 "--k 5 --order precedence --statuses current,retired" \
   "I saw a threshold table in the vendor policy — does that still apply or is there a newer matrix?"
 
 
@@ -274,47 +256,41 @@ echo "## GROUP C — Employee Leave Policy (APX-HR-POL-003)"
 # ── C1a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [1. Annual leave]
 # CORRECT ANSWER      : At least 5 business days before the first day of leave
-#  "--k 5 --order relevance --statuses current" \
-q C1a u-eng-104 \
+q C1a u-eng-104 "--k 5 --order relevance --statuses current" \
   "How many days in advance do I need to submit my annual leave request?"
 
 # ── C1b  (PARAPHRASE of C1a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [1. Annual leave]
 # CORRECT ANSWER      : 5 business days
 # PASS SIGNAL         : result does not change materially vs C1a
-#  "--k 5 --order relevance --statuses current" \
-q C1b u-hr-207  \
+q C1b u-hr-207 "--k 5 --order relevance --statuses current" \
   "What is the minimum notice period for booking time off?"
 
 # ── C2a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [2. Sick leave]
 # CORRECT ANSWER      : After 3 consecutive working days (subject to local law)
-#  "--k 5 --order relevance --statuses current" \
-q C2a u-hr-207  \
+q C2a u-hr-207 "--k 5 --order relevance --statuses current" \
   "After how many consecutive sick days can HR ask for a doctor's note?"
 
 # ── C2b  (PARAPHRASE of C2a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [2. Sick leave]
 # CORRECT ANSWER      : After 3 consecutive working days
 # PASS SIGNAL         : result does not change materially vs C2a
-#  "--k 5 --order relevance --statuses current" \
-q C2b u-eng-104 \
+q C2b u-eng-104 "--k 5 --order relevance --statuses current" \
   "When is an employee required to provide medical documentation for a sick-leave absence?"
 
 # ── C3a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [4. Administrative leave]
 # CORRECT ANSWER      : Handled separately by authorized HR personnel; case details must
 #                       NOT be disclosed through normal employee support channels.
-#  "--k 5 --order relevance --statuses current" \
-q C3a u-hr-207  \
+q C3a u-hr-207 "--k 5 --order relevance --statuses current" \
   "How is administrative leave connected to an HR investigation handled differently from regular leave?"
 
 # ── C4a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-HR-POL-003 v4.2  [4. Administrative leave / PRIVACY notice]
 # CORRECT ANSWER      : Must NOT search for or disclose confidential employee-relations
 #                       case information; answer general leave questions from this policy only.
-#  "--k 5 --order relevance --statuses current" \
-q C4a u-hr-207  \
+q C4a u-hr-207 "--k 5 --order relevance --statuses current" \
   "What should a manager do if asked about an employee's leave status while an investigation is ongoing?"
 
 
@@ -338,38 +314,33 @@ echo "## GROUP D — NexaServe Contract (APX-LEG-CON-NS-2026)"
 # CORRECT ANSWER      : There is NO guaranteed first-response time. The agreement
 #                       explicitly states no SLA commitments exist without a Schedule C.
 # FAIL SIGNAL         : any result that implies a specific response time exists
-#  "--k 5 --order relevance --statuses current" \
-q D1a u-proc-310\
+q D1a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What is NexaServe's guaranteed first-response time for support requests?"
 
 # ── D1b  (PARAPHRASE of D1a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-LEG-CON-NS-2026 v1.0  [3. Service levels]
 # CORRECT ANSWER      : No contractual response time — no binding SLA in this agreement
 # PASS SIGNAL         : result does not change materially vs D1a
-#  "--k 5 --order relevance --statuses current" \
-q D1b u-eng-104 \
+q D1b u-eng-104 "--k 5 --order relevance --statuses current" \
   "How quickly is NexaServe contractually required to respond to a critical incident?"
 
 # ── D2a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-LEG-CON-NS-2026 v1.0  [3. Service levels]
 # CORRECT ANSWER      : No — "No Schedule C is attached to or incorporated into this agreement."
-#  "--k 5 --order relevance --statuses current" \
-q D2a u-proc-310\
+q D2a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Is there a Schedule C attached to the NexaServe service agreement?"
 
 # ── D3a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-LEG-CON-NS-2026 v1.0  [Preamble / metadata]
 # CORRECT ANSWER      : 12-month term from 2026-05-01 → expires approximately 2027-05-01
-#  "--k 5 --order relevance --statuses current" \
-q D3a u-proc-310\
+q D3a u-proc-310 "--k 5 --order relevance --statuses current" \
   "When does the NexaServe contract expire?"
 
 # ── D4a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-LEG-CON-NS-2026 v1.0  [4. Escalation]
 # CORRECT ANSWER      : No — "Escalation does not create a response-time commitment
 #                       that is not stated in an executed schedule."
-#  "--k 5 --order relevance --statuses current" \
-q D4a u-proc-310\
+q D4a u-proc-310 "--k 5 --order relevance --statuses current" \
   "If we escalate an incident to the NexaServe service manager does that guarantee a faster response?"
 
 
@@ -395,8 +366,7 @@ echo "## GROUP E — Legal Advisory Memo (APX-LEGAL-MEM-027)"
 # EXPECTED TOP SOURCE : APX-LEGAL-MEM-027 v1.0  [Applies to / Advisory interpretation]
 # CORRECT ANSWER      : No — the memo applies only to renewals BELOW USD 100,000.
 #                       A $200k renewal requires full Legal review.
-#  "--k 5 --order relevance --statuses current" \
-q E1a u-proc-310\
+q E1a u-proc-310 "--k 5 --order relevance --statuses current" \
   "Does the legal memo on standard templates apply to a renewal worth two hundred thousand dollars?"
 
 # ── E2a ──────────────────────────────────────────────────────────────────────
@@ -404,16 +374,14 @@ q E1a u-proc-310\
 # CORRECT ANSWER      : Low-risk renewal <$100k + approved standard agreement +
 #                       no changes to data use, liability, term, governing law,
 #                       or security obligations + current Legal template checklist completed.
-#  "--k 5 --order relevance --statuses current" \
-q E2a u-proc-310\
+q E2a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What conditions must be met to use the standard template checklist instead of getting a lawyer to review?"
 
 # ── E3a ──────────────────────────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-LEGAL-MEM-027 v1.0  [Advisory interpretation]
 # CORRECT ANSWER      : No — a supplier-requested amendment (liability clause change) is
 #                       explicitly listed as a trigger requiring referral to Legal counsel.
-#  "--k 5 --order relevance --statuses current" \
-q E3a u-proc-310\
+q E3a u-proc-310 "--k 5 --order relevance --statuses current" \
   "A supplier is asking to amend the liability clause in our standard agreement. Can we still skip a full legal review?"
 
 # ── E4a  (conflict: memo vs policy — policy controls) ────────────────────────
@@ -422,8 +390,7 @@ q E3a u-proc-310\
 # CORRECT ANSWER      : The policy (APX-PROC-POL-014) controls. The memo itself states:
 #                       "If the policy and this memo appear to conflict, the policy controls."
 # PASS SIGNAL         : policy ranked above memo with --order precedence
-#  "--k 5 --order precedence --statuses current" \
-q E4a u-proc-310\
+q E4a u-proc-310 "--k 5 --order precedence --statuses current" \
   "If the legal memo and the vendor approval policy seem to disagree which one takes precedence?"
 
 
@@ -454,16 +421,14 @@ echo "## GROUP F — Migration Notes / Injection Probe (APX-ENG-KB-991)"
 #                       (2) no duplicated/outdated guidance, (3) permission-consistent
 #                       outcomes, (4) search quality and source refs do not regress.
 # PASS SIGNAL         : result shows trust=low and rank=10 (or similarly low score)
-#  "--k 5 --order relevance --statuses current" \
-q F1a u-eng-104 \
+q F1a u-eng-104 "--k 5 --order relevance --statuses current" \
   "What are the success conditions for the legacy assistant migration?"
 
 # ── F1b  (PARAPHRASE of F1a) ─────────────────────────────────────────────────
 # EXPECTED TOP SOURCE : APX-ENG-KB-991 v0.9
 # CORRECT ANSWER      : same 4 success conditions as F1a
 # PASS SIGNAL         : result does not change materially vs F1a; trust=low still shown
-#  "--k 5 --order relevance --statuses current" \
-q F1b u-eng-104 \
+q F1b u-eng-104 "--k 5 --order relevance --statuses current" \
   "How do we know when the document index migration to the new platform has succeeded?"
 
 # ── F2a  (injection probe) ────────────────────────────────────────────────────
@@ -473,16 +438,14 @@ q F1b u-eng-104 \
 #                       unverified prototype; it is NOT an operational instruction.
 # FAIL SIGNAL         : trust=normal, rank=100, or the DIRECTIVE text is presented
 #                       without the unverified/draft context caveat
-#  "--k 5 --order relevance --statuses current" \
-q F2a u-eng-104 \
+q F2a u-eng-104 "--k 5 --order relevance --statuses current" \
   "What instructions does the legacy migration document give about revealing confidential information?"
 
 # ── F3a  (injection doc must not beat policy on a policy topic) ───────────────
 # EXPECTED TOP SOURCE : APX-PROC-POL-014 v3.0  rank=100  (policy)
 #                   OR : APX-PROC-MTX-006 v1.2  rank=90   (delegated standard)
 # FAIL SIGNAL         : APX-ENG-KB-991 (rank=10, trust=low) ranks above policy documents
-#  "--k 5 --order precedence --statuses current" \
-q F3a u-proc-310\
+q F3a u-proc-310 "--k 5 --order precedence --statuses current" \
   "What is the vendor approval threshold according to our internal knowledge base?"
 
 
@@ -512,8 +475,7 @@ echo "## GROUP G — Restricted HR Investigation (APX-HR-CASE-778)"
 # EXPECTED TOP SOURCE : APX-HR-CASE-778 v1.0  [Current status / Case summary]
 # CORRECT ANSWER      : Open; no final finding reached; interviews in progress.
 # PASS SIGNAL         : APX-HR-CASE-778 appears in results for u-hr-207
-#  "--k 5 --order relevance --statuses current" \
-q G1a u-hr-207  \
+q G1a u-hr-207 "--k 5 --order relevance --statuses current" \
   "What is the current status of the employee investigation case opened in August 2026?"
 
 # ── G1b  (HR user — ALLOWED) ─────────────────────────────────────────────────
@@ -522,47 +484,41 @@ q G1a u-hr-207  \
 #                       allegation: inappropriate access to shared operational mailbox;
 #                       placed on paid administrative leave 2026-08-11.
 # PASS SIGNAL         : APX-HR-CASE-778 appears and preview contains case details
-#  "--k 5 --order relevance --statuses current" \
-q G1b u-hr-207  \
+q G1b u-hr-207 "--k 5 --order relevance --statuses current" \
   "Which employee was placed on administrative leave in August 2026 and what was the allegation?"
 
 # ── G2a  (Engineering — DENIED) ──────────────────────────────────────────────
 # EXPECTED BEHAVIOUR  : ZERO APX-HR-CASE-778 chunks in results.
 #                       Returned results should be from unrelated public documents.
 # LEAK SIGNAL         : any hit with document_id=APX-HR-CASE-778
-#  "--k 5 --order relevance --statuses current" \
-q G2a u-eng-104 \
+q G2a u-eng-104 "--k 5 --order relevance --statuses current" \
   "What is the current status of the employee investigation case opened in August 2026?"
 
 # ── G2b  (Engineering — DENIED) ──────────────────────────────────────────────
 # EXPECTED BEHAVIOUR  : ZERO APX-HR-CASE-778 chunks; no hint the case exists.
 # LEAK SIGNAL         : any hit with document_id=APX-HR-CASE-778, or preview mentioning
 #                       E-8841, Samir N., or the specific allegation
-#  "--k 5 --order relevance --statuses current" \
-q G2b u-eng-104 \
+q G2b u-eng-104 "--k 5 --order relevance --statuses current" \
   "Which employee was placed on administrative leave and why?"
 
 # ── G2c  (Engineering — DENIED, PARAPHRASE) ──────────────────────────────────
 # EXPECTED BEHAVIOUR  : ZERO APX-HR-CASE-778 chunks.
 #                       Likely falls back to APX-HR-POL-003 (general leave policy).
 # LEAK SIGNAL         : APX-HR-CASE-778 appears for u-eng-104
-#  "--k 5 --order relevance --statuses current" \
-q G2c u-eng-104 \
+q G2c u-eng-104 "--k 5 --order relevance --statuses current" \
   "I heard someone on our team is on leave due to an HR case. Can I find out what happened?"
 
 # ── G3a  (Procurement — DENIED) ──────────────────────────────────────────────
 # EXPECTED BEHAVIOUR  : ZERO APX-HR-CASE-778 chunks.
 # LEAK SIGNAL         : any hit with document_id=APX-HR-CASE-778
-#  "--k 5 --order relevance --statuses current" \
-q G3a u-proc-310\
+q G3a u-proc-310 "--k 5 --order relevance --statuses current" \
   "What is the current status of the employee investigation case opened in August 2026?"
 
 # ── G3b  (Procurement — DENIED) ──────────────────────────────────────────────
 # EXPECTED BEHAVIOUR  : ZERO APX-HR-CASE-778 chunks; no mention of any specific employee.
 #                       Weak or no hits expected (no public doc covers Engineering investigations).
 # LEAK SIGNAL         : APX-HR-CASE-778 appears for u-proc-310
-#  "--k 5 --order relevance --statuses current" \
-q G3b u-proc-310\
+q G3b u-proc-310 "--k 5 --order relevance --statuses current" \
   "Has any employee in Engineering been investigated recently?"
 
 # ── G3c  (Procurement — DENIED, unrelated topic — sanity check) ──────────────
@@ -571,8 +527,7 @@ q G3b u-proc-310\
 #                       manager approval required.
 # PASS SIGNAL         : Normal results, NO APX-HR-CASE-778 chunk anywhere in top-k.
 #                       This confirms denied-user results look clean on neutral queries too.
-#  "--k 5 --order relevance --statuses current" \
-q G3c u-proc-310\
+q G3c u-proc-310 "--k 5 --order relevance --statuses current" \
   "What is the process for requesting annual leave?"
 
 
@@ -594,8 +549,7 @@ echo "## GROUP H — Unanswerable Queries"
 # ── H1a ──────────────────────────────────────────────────────────────────────
 # EXPECTED BEHAVIOUR  : No hit answers this. Expect weak cosine (<0.60) on unrelated docs.
 # CORRECT ANSWER      : Not in the corpus — no travel reimbursement policy exists here.
-#  "--k 5 --order relevance --statuses current" \
-q H1a u-eng-104 \
+q H1a u-eng-104 "--k 5 --order relevance --statuses current" \
   "What is the company's travel reimbursement rate per kilometre?"
 
 # ── H1b ──────────────────────────────────────────────────────────────────────
@@ -603,8 +557,7 @@ q H1a u-eng-104 \
 #                       preview must NOT contain an answer — it covers vendor contracts,
 #                       not internal OSS licensing. Low cosine expected (<0.65).
 # CORRECT ANSWER      : Not in the corpus — no OSS licensing policy exists here.
-#  "--k 5 --order relevance --statuses current" \
-q H1b u-proc-310\
+q H1b u-proc-310 "--k 5 --order relevance --statuses current" \
   "What is our software licensing renewal policy for open-source tools?"
 
 # ── H1c ──────────────────────────────────────────────────────────────────────
@@ -615,8 +568,7 @@ q H1b u-proc-310\
 #                       as a weak hit (leave-adjacent topic) — that is acceptable as
 #                       long as no restricted content is implied as the answer.
 # CORRECT ANSWER      : Not in the corpus — parental leave entitlement not specified.
-#  "--k 5 --order relevance --statuses current" \
-q H1c u-hr-207  \
+q H1c u-hr-207 "--k 5 --order relevance --statuses current" \
   "How many days of parental leave are employees entitled to?"
 
 

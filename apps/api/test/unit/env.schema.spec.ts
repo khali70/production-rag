@@ -17,7 +17,16 @@ const valid = {
   EMBEDDING_DTYPE: "fp32",
   EMBEDDING_CACHE_DIR: ".cache/models",
   EMBEDDING_ALLOW_REMOTE: "true",
+  RERANKER_MODEL_ID: "Xenova/bge-reranker-base",
+  RERANKER_DTYPE: "q8",
   PURGE_RETENTION_DAYS: "30",
+  LLM_PROVIDER: "fake",
+  LLM_BASE_URL: "http://localhost:11434",
+  LLM_MODEL_ID: "qwen3:4b",
+  LLM_API_KEY: "",
+  LLM_TIMEOUT_MS: "120000",
+  LLM_MAX_TOKENS: "1500",
+  LLM_DISABLE_THINKING: "true",
 };
 
 describe("env schema", () => {

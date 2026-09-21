@@ -29,7 +29,22 @@ export class AppConfig {
     allowRemote: boolean;
   };
 
+  readonly reranker: {
+    modelId: string;
+    dtype: Env["RERANKER_DTYPE"];
+  };
+
   readonly purgeRetentionDays: number;
+
+  readonly llm: {
+    provider: Env["LLM_PROVIDER"];
+    baseUrl: string;
+    modelId: string;
+    apiKey: string;
+    timeoutMs: number;
+    maxTokens: number;
+    disableThinking: boolean;
+  };
 
   constructor(env: Env) {
     this.nodeEnv = env.NODE_ENV;
@@ -44,6 +59,19 @@ export class AppConfig {
       cacheDir: fromRoot(env.EMBEDDING_CACHE_DIR),
       allowRemote: env.EMBEDDING_ALLOW_REMOTE,
     };
+    this.reranker = {
+      modelId: env.RERANKER_MODEL_ID,
+      dtype: env.RERANKER_DTYPE,
+    };
     this.purgeRetentionDays = env.PURGE_RETENTION_DAYS;
+    this.llm = {
+      provider: env.LLM_PROVIDER,
+      baseUrl: env.LLM_BASE_URL.replace(/\/+$/, ""),
+      modelId: env.LLM_MODEL_ID,
+      apiKey: env.LLM_API_KEY,
+      timeoutMs: env.LLM_TIMEOUT_MS,
+      maxTokens: env.LLM_MAX_TOKENS,
+      disableThinking: env.LLM_DISABLE_THINKING,
+    };
   }
 }

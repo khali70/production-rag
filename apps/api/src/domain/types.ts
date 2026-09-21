@@ -119,6 +119,9 @@ export type ScoredChunk = {
   status: Status;
   trust: Lifecycle["trust"];
   effectiveFrom: string;
+  owner: string;
+  /** Document relations (supersedes / amends / qualifies), read from the documents table. */
+  relations: Relation[];
 };
 
 export type SearchQuery = {

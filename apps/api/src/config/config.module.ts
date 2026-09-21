@@ -27,7 +27,10 @@ import { resolve } from "node:path";
             "PACK_DIR", "AUTHORITY_FILE",
             "EMBEDDING_MODEL_ID", "EMBEDDING_DIM", "EMBEDDING_DTYPE",
             "EMBEDDING_CACHE_DIR", "EMBEDDING_ALLOW_REMOTE",
+            "RERANKER_MODEL_ID", "RERANKER_DTYPE",
             "PURGE_RETENTION_DAYS",
+            "LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL_ID", "LLM_API_KEY",
+            "LLM_TIMEOUT_MS", "LLM_MAX_TOKENS", "LLM_DISABLE_THINKING",
           ].map((key) => [key, config.get(key)]),
         ) as unknown as Env;
         return new AppConfig(env);

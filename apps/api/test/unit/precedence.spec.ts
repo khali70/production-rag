@@ -29,6 +29,8 @@ function chunk(
     status: "current",
     trust: "normal",
     effectiveFrom: opts.effectiveFrom ?? "2026-01-01",
+    owner: "owner",
+    relations: [],
   };
 }
 

@@ -23,6 +23,13 @@ function makeConfig(dim = 384): AppConfig {
     EMBEDDING_CACHE_DIR: ".cache/models",
     EMBEDDING_ALLOW_REMOTE: false,
     PURGE_RETENTION_DAYS: 30,
+    LLM_PROVIDER: "fake",
+    LLM_BASE_URL: "http://localhost:11434",
+    LLM_MODEL_ID: "fake",
+    LLM_API_KEY: "",
+    LLM_TIMEOUT_MS: 1000,
+    LLM_MAX_TOKENS: 100,
+    LLM_DISABLE_THINKING: false,
   } as Env);
 }
 

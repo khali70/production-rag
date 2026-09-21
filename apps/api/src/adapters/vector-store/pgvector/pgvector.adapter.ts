@@ -6,6 +6,7 @@ import type {
   ChunkRecord,
   IndexInfo,
   Permissions,
+  Relation,
   ScoredChunk,
   SearchQuery,
   Status,
@@ -40,6 +41,8 @@ type ChunkRow = {
   status: Status;
   effective_from: Date | string;
   trust: "normal" | "low";
+  owner: string;
+  relations: Relation[];
   score: string | number;
   cosine: string | number | null;
 };
@@ -140,6 +143,8 @@ export class PgVectorStoreAdapter extends VectorStorePort {
       status: row.status,
       trust: row.trust,
       effectiveFrom: toDateString(row.effective_from),
+      owner: row.owner,
+      relations: row.relations ?? [],
     };
   }
 

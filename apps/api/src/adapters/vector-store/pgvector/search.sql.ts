@@ -35,7 +35,8 @@ const RETURNED_COLUMNS = `
     c.title, c.source_path, c.section_path, c.page_start, c.page_end,
     c.char_start, c.char_end, c.text,
     c.classification, c.tier, c.authority_rank, c.level,
-    c.status, c.effective_from, c.trust`;
+    c.status, c.effective_from, c.trust,
+    d.owner, d.relations`;
 
 /** Rank by fused relevance; authority only breaks ties. */
 const ORDER_RELEVANCE = `
@@ -111,6 +112,7 @@ fused AS (
 SELECT ${RETURNED_COLUMNS}, f.rrf AS score, f.cosine
 FROM fused f
 JOIN chunks c ON c.chunk_id = f.chunk_id
+JOIN documents d ON d.document_id = c.document_id AND d.version = c.version
 WHERE $9::float8 IS NULL OR 1 - (c.embedding <=> $1::vector) >= $9::float8
 ORDER BY ${orderBy === "precedence" ? ORDER_PRECEDENCE : ORDER_RELEVANCE}
 LIMIT $7`;

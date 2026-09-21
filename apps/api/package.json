@@ -9,6 +9,7 @@
     "migrate": "node dist/cli/migrate.js",
     "ingest": "node dist/cli/ingest.js",
     "search": "node dist/cli/search.js",
+    "ask": "node dist/cli/ask.js",
     "test": "vitest run --config vitest.config.ts",
     "test:contract": "vitest run --config vitest.contract.config.ts"
   },
