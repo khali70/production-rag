@@ -1,0 +1,18 @@
+{
+  "name": "production-rag",
+  "private": true,
+  "packageManager": "pnpm@10.33.0",
+  "engines": { "node": ">=22.12" },
+  "scripts": {
+    "db:up": "docker compose up -d --wait",
+    "db:down": "docker compose down",
+    "build": "pnpm --filter api build",
+    "migrate": "pnpm --filter api migrate",
+    "ingest": "pnpm --filter api ingest",
+    "test": "pnpm --filter api test",
+    "test:contract": "pnpm --filter api test:contract"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["onnxruntime-node", "sharp", "@swc/core", "esbuild"]
+  }
+}

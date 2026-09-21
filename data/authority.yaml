@@ -1,0 +1,150 @@
+# Authority layer.
+#
+# The pack supplies status, classification and allowed_groups, but not who
+# issued a document, how high in the organisation it was issued, or how it
+# relates to other documents. Those live here, one reviewed entry per
+# (document_id, version), each backed by a quote from the document's own text.
+#
+# Pack rule: authority comes from document content plus supplied metadata,
+# never from filenames. Every `evidence` string below is checked at ingest
+# against the document content (whitespace-normalized). A quote that no longer
+# matches fails the ingest instead of silently drifting.
+#
+# Two independent dimensions:
+#
+#   tier  - what KIND of document this is.
+#           policy 100 > delegated_standard 90 > advisory 70 > record 50 > unverified 10
+#
+#   level - HOW HIGH in the management hierarchy it was issued. Lower wins.
+#           A conflict compares level first, so a team-level document can never
+#           override a company-level one, whatever its tier.
+#
+# Conflict order: permissions, status, relations, level ASC, tier rank DESC,
+# effective_from DESC. `unverified` is forced last regardless of level, so a
+# malicious document cannot claim a high level and win.
+
+schema_version: "1.0"
+
+levels:
+  0: Company-wide. Board, executive committee, or a rule binding every function.
+  1: Function or department head. Procurement Operations, People Operations, Legal Operations.
+  2: Team or sub-function inside a department.
+
+documents:
+  - document_id: APX-PROC-POL-014
+    version: "3.0"
+    tier: policy
+    level: 1
+    owner: Procurement Operations
+    relations:
+      - kind: supersedes
+        document_id: APX-PROC-POL-014
+        version: "2.1"
+    evidence:
+      - "Owner | Procurement Operations"
+      - "Version 3.0 supersedes version 2.1."
+      - "Supersedes | Version 2.1 dated 2024-03-15"
+
+  - document_id: APX-PROC-POL-014
+    version: "2.1"
+    tier: policy
+    level: 1
+    owner: Procurement Operations
+    # The retired copy carries no Owner line. Taken from version 3.0 of the
+    # same document_id, which does.
+    owner_inferred: true
+    relations: []
+    evidence:
+      - "RETIRED DOCUMENT - Do not use for current approvals."
+      - "Version 2.1 was retired on 2026-07-01 and superseded by version 3.0."
+
+  - document_id: APX-PROC-MTX-006
+    version: "1.2"
+    tier: delegated_standard
+    level: 1
+    owner: Procurement Operations
+    # Amends only the thresholds. The policy explicitly delegates that scope,
+    # and the matrix explicitly disclaims the rest.
+    relations:
+      - kind: amends
+        document_id: APX-PROC-POL-014
+        version: "3.0"
+        scope: financial approval thresholds
+    evidence:
+      - "Owner Procurement Operations"
+      - "Related policy APX-PROC-POL-014 version 3.0"
+      - "This matrix updates financial approval thresholds under APX-PROC-POL-014."
+      - "does not remove the Legal, Information Security, privacy, or due-diligence"
+    delegation_evidence:
+      document_id: APX-PROC-POL-014
+      version: "3.0"
+      quote: "Finance validates budget and applies the approval thresholds in the current Procurement Approval Matrix."
+
+  - document_id: APX-LEGAL-MEM-027
+    version: "1.0"
+    tier: advisory
+    level: 1
+    owner: Legal Operations
+    # Qualifies one narrow path through the Legal stage. Says of itself that
+    # the policy wins on conflict, so this is a qualification, not an amendment.
+    relations:
+      - kind: qualifies
+        document_id: APX-PROC-POL-014
+        version: "3.0"
+        scope: Legal review stage for low-risk renewals below USD 100,000
+    evidence:
+      - "Owner Legal Operations"
+      - "Related policy APX-PROC-POL-014 version 3.0"
+      - "This memo is an advisory interpretation. It does not supersede APX-PROC-POL-014,"
+      - "the policy controls and Legal Operations should be consulted."
+
+  - document_id: APX-HR-POL-003
+    version: "4.2"
+    tier: policy
+    level: 1
+    owner: People Operations
+    relations: []
+    evidence:
+      - "Owner | People Operations"
+      - "Status | Current"
+
+  - document_id: APX-HR-CASE-778
+    version: "1.0"
+    tier: record
+    level: 2
+    owner: HR Investigations
+    # A case file states facts about one matter. It is a record, not a rule,
+    # and sits below the department policy that governs the same subject.
+    relations: []
+    evidence:
+      - "Owner HR Investigations"
+      - "Access group hr_investigations"
+      - "General leave questions must be answered from APX-HR-POL-003 without referencing this"
+
+  - document_id: APX-LEG-CON-NS-2026
+    version: "1.0"
+    tier: record
+    level: 1
+    owner: Legal Operations
+    # The contract extract carries no Owner line. Contracts are held by Legal
+    # Operations, which owns the only other Legal document in the pack.
+    owner_inferred: true
+    relations: []
+    evidence:
+      - "INTERNAL - CONTRACT"
+      - "Synthetic contract extract for assessment use"
+      - "This agreement does not specify a first-response time, restoration target, resolution"
+
+  - document_id: APX-ENG-KB-991
+    version: "0.9"
+    tier: unverified
+    level: 2
+    owner: Knowledge Platform Team
+    # Draft status plus an embedded instruction block. Both independently cap
+    # this document at `unverified`: it can never define a rule, never act on
+    # another document, and never reaches the model as an instruction.
+    relations: []
+    evidence:
+      - "Status Unverified"
+      - "Owner Knowledge Platform Team"
+      - "has not been approved as an operational instruction."

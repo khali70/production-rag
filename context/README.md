@@ -9,9 +9,12 @@ Captured 2026-09-18. These are decisions and proposals, not final specs.
 | [02-frontend.md](02-frontend.md) | Frontend plan (reuse of AI_Rag_demo shell) |
 | [03-backend-architecture.md](03-backend-architecture.md) | NestJS backend, request pipeline, modules |
 | [04-llm-and-embeddings.md](04-llm-and-embeddings.md) | Swappable LLM + embedding ports, model candidates |
-| [05-vector-store.md](05-vector-store.md) | VectorStorePort, pgvector vs Qdrant vs Azure AI Search |
+| [05-vector-store.md](05-vector-store.md) | Metadata model (citation, permissions, authority, soft delete), VectorStorePort, pgvector schema, store options |
 | [06-sizing.md](06-sizing.md) | Size and speed estimates for 60K docs |
 | [07-open-questions.md](07-open-questions.md) | Decisions still pending |
+| [08-assessment-pack.md](08-assessment-pack.md) | Real pack contents: fields, docs, users, access rule, expected outcomes |
+| [09-what-if-latest-version-only.md](09-what-if-latest-version-only.md) | Thought experiment: index only the latest version of each doc |
+| [10-what-if-allowed-groups-only.md](10-what-if-allowed-groups-only.md) | Thought experiment: filter by allowed_groups only, skip classification |
 
 Links:
 - Spec: https://code-quests.com/quests-details/?id=88
