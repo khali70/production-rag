@@ -61,7 +61,11 @@ const ORDER_PRECEDENCE = `
 
 /**
  * $1 query vector, $2 query text, $3 groups, $4 statuses,
- * $5 min authority rank, $6 candidate pool size, $7 topK, $8 as-of date.
+ * $5 min authority rank, $6 candidate pool size, $7 topK, $8 as-of date,
+ * $9 min cosine or NULL for no threshold.
+ *
+ * The cosine threshold is checked against the real embedding distance of every
+ * fused row, not the vector-leg column, so full-text-only hits are held to it too.
  */
 export function buildSearchSql(orderBy: "relevance" | "precedence"): string {
   return `
@@ -107,6 +111,7 @@ fused AS (
 SELECT ${RETURNED_COLUMNS}, f.rrf AS score, f.cosine
 FROM fused f
 JOIN chunks c ON c.chunk_id = f.chunk_id
+WHERE $9::float8 IS NULL OR 1 - (c.embedding <=> $1::vector) >= $9::float8
 ORDER BY ${orderBy === "precedence" ? ORDER_PRECEDENCE : ORDER_RELEVANCE}
 LIMIT $7`;
 }

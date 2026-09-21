@@ -130,6 +130,12 @@ export type SearchQuery = {
   /** e.g. 90 for "what is our process" questions. Defaults to 0. */
   minAuthorityRank?: number;
   /**
+   * Minimum cosine similarity between the query and the chunk embedding,
+   * in [-1, 1]. Applied to every fused candidate, including ones that only the
+   * full-text leg found, so a keyword hit cannot bypass it. Omit for no filter.
+   */
+  minCosine?: number;
+  /**
    * Date the answer must be valid on, as YYYY-MM-DD. Chunks whose
    * effective_from is later are not in force yet and are excluded, whatever
    * their status. Defaults to today (UTC). Pass a fixed date for repeatable evals.

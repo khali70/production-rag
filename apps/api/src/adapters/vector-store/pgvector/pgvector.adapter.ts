@@ -108,6 +108,7 @@ export class PgVectorStoreAdapter extends VectorStorePort {
         candidates,
         topK,
         asOf,
+        q.minCosine ?? null,
       ]);
 
       return rows.map((row) => this.toScoredChunk(row));

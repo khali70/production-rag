@@ -26,13 +26,33 @@ async function main(): Promise<void> {
       order: { type: "string", default: "relevance" },
       statuses: { type: "string", default: "current" },
       "min-rank": { type: "string", default: "0" },
+      "min-cosine": { type: "string" },
       "as-of": { type: "string" },
+      "max-chars": { type: "string", default: "10000" },
     },
   });
 
   const question = positionals.join(" ").trim();
   if (!values.user || question.length === 0) {
-    throw new Error('Usage: search --user <user_id> [--k 5] [--order relevance|precedence] [--as-of YYYY-MM-DD] "question"');
+    throw new Error(
+      'Usage: search --user <user_id> [--k 5] [--order relevance|precedence] [--statuses current,superseded,retired] [--min-rank N] [--min-cosine 0.0-1.0] [--as-of YYYY-MM-DD] [--max-chars N] "question"',
+    );
+  }
+
+  const minRank = Number(values["min-rank"]);
+  if (!Number.isInteger(minRank) || minRank < 0) {
+    throw new Error(`--min-rank must be a non-negative integer, got "${values["min-rank"]}"`);
+  }
+
+  const minCosine = values["min-cosine"] === undefined ? undefined : Number(values["min-cosine"]);
+  if (minCosine !== undefined && !(minCosine >= -1 && minCosine <= 1)) {
+    throw new Error(`--min-cosine must be a number between -1 and 1, got "${values["min-cosine"]}"`);
+  }
+
+  // 0 prints each chunk in full; N > 0 caps the preview at N chars.
+  const maxChars = Number(values["max-chars"]);
+  if (!Number.isInteger(maxChars) || maxChars < 0) {
+    throw new Error(`--max-chars must be a non-negative integer, got "${values["max-chars"]}"`);
   }
 
   const app = await NestFactory.createApplicationContext(AppModule, { logger: ["warn", "error"] });
@@ -56,7 +76,8 @@ async function main(): Promise<void> {
       embedding: embedding!,
       topK: Number(values.k),
       includeStatuses: values.statuses!.split(",") as Status[],
-      minAuthorityRank: Number(values["min-rank"]),
+      minAuthorityRank: minRank,
+      minCosine,
       asOf: values["as-of"],
       orderBy: values.order === "precedence" ? "precedence" : "relevance",
     });
@@ -67,11 +88,18 @@ async function main(): Promise<void> {
       return;
     }
     for (const [i, r] of results.entries()) {
+      const text = r.text.replace(/\s+/g, " ").trim();
+      const preview = maxChars > 0 && text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
+      const { pageStart, pageEnd } = r.source;
+      const pages =
+        pageStart === undefined ? "" : pageEnd === undefined || pageEnd === pageStart ? ` p.${pageStart}` : ` pp.${pageStart}-${pageEnd}`;
       console.log(
         `${i + 1}. ${r.source.documentId} v${r.source.version} [${r.source.sectionPath.join(" > ")}]\n` +
+          `   title=${r.source.title}\n` +
+          `   source=${r.source.sourcePath}${pages} chars=${r.source.charStart}-${r.source.charEnd} chunk=${r.source.chunkIndex}\n` +
           `   tier=${r.tier} level=${r.level} rank=${r.authorityRank} status=${r.status} trust=${r.trust}\n` +
           `   score=${r.score.toFixed(4)} cosine=${r.cosine === null ? "n/a" : r.cosine.toFixed(4)}\n` +
-          `   ${r.text.replace(/\s+/g, " ").slice(0, 160)}...\n`,
+        `   ${preview}\n`,
       );
     }
   } finally {
