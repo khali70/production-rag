@@ -9,6 +9,7 @@
     "build": "pnpm --filter api build",
     "migrate": "pnpm --filter api migrate",
     "ingest": "pnpm --filter api ingest",
+    "trace": "pnpm --filter api trace",
     "test": "pnpm --filter api test",
     "test:contract": "pnpm --filter api test:contract"
   },

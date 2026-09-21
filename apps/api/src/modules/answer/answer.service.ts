@@ -1,12 +1,16 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { AccessScope, ScoredChunk, SearchQuery } from "../../domain/types.js";
-import { EmbeddingPort } from "../../ports/embedding.port.js";
-import { LlmPort, type GenerateResult } from "../../ports/llm.port.js";
-import { VectorStorePort } from "../../ports/vector-store.port.js";
-import { MODEL_ANSWER_JSON_SCHEMA, ModelAnswerSchema, type Answer, type ModelAnswer } from "./answer.schema.js";
+import type { GenerateResult } from "../../ports/llm.port.js";
+import type { Answer } from "./answer.schema.js";
 import { validateAnswer } from "./answer.validator.js";
 import { resolveEvidence, type EvidenceDoc } from "./evidence.resolver.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.builder.js";
+import { EmbedStage } from "./stages/embed.stage.js";
+import { GenerateStage } from "./stages/generate.stage.js";
+import { RerankStage } from "./stages/rerank.stage.js";
+import { SearchStage } from "./stages/search.stage.js";
+
+export { parseModelAnswer } from "./stages/generate.stage.js";
 
 export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
   /**
@@ -18,9 +22,16 @@ export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
    * Chunks whose cosine is more than this below the best one are dropped as
    * off-topic before authority is resolved. Without it an unrelated policy at
    * the same level becomes a second "equal authority" primary.
+   * Ignored when reranking: the reranker score is the sharper signal.
    */
   relativeCosineMargin: number;
   maxContextChars: number;
+  /**
+   * When set, search fetches `pool` chunks by relevance, the reranker keeps
+   * the best `topK`, and chunks scoring below `minScore` are dropped as
+   * off-topic. Precedence is still applied afterwards by the evidence resolver.
+   */
+  rerank?: { pool: number; minScore: number };
 };
 
 export type AskResult = {
@@ -32,7 +43,8 @@ export type AskResult = {
     searchMs: number;
     bestCosine: number;
     gate?: string;
-    /** Chunks removed by the relative cosine margin. */
+    rerank?: { modelId: string; ms: number; scores: Record<string, number>; kept: ScoredChunk[] };
+    /** Chunks removed by the relative cosine margin, or by the rerank floor when reranking. */
     offTopic: ScoredChunk[];
     evidence: EvidenceDoc[];
     prompt?: { system: string; user: string };
@@ -44,9 +56,11 @@ export type AskResult = {
   };
 };
 
+export type AskStage = "embedded" | "retrieved" | "reranked" | "resolved" | "prompted" | "generating";
+
 export type AskHooks = {
   /** Fires as each stage completes, so a caller can print a live trace. */
-  onStage?: (stage: "embedded" | "retrieved" | "resolved" | "prompted" | "generating", debug: AskResult["debug"]) => void;
+  onStage?: (stage: AskStage, debug: AskResult["debug"]) => void;
   onDelta?: (kind: "content" | "reasoning", text: string) => void;
 };
 
@@ -59,23 +73,39 @@ const refusal = (summary: string, warning: string): Answer => ({
   warnings: [warning],
 });
 
+const NOT_FOUND = "I could not find trustworthy information you have access to that answers this.";
+
+/**
+ * Orchestrates the answer pipeline. Each model-backed step is a stage behind
+ * its own port, so swapping the embedder, reranker or LLM is a config change:
+ *
+ *   embed -> search -> gate -> [rerank] -> off-topic filter -> resolve authority
+ *         -> prompt -> generate -> validate
+ *
+ * The gate, filter, resolver and validator are plain code: no model decides
+ * what evidence is trusted.
+ */
 @Injectable()
 export class AnswerService {
   constructor(
-    @Inject(EmbeddingPort) private readonly embeddings: EmbeddingPort,
-    @Inject(VectorStorePort) private readonly store: VectorStorePort,
-    @Inject(LlmPort) private readonly llm: LlmPort,
+    @Inject(EmbedStage) private readonly embed: EmbedStage,
+    @Inject(SearchStage) private readonly search: SearchStage,
+    @Inject(RerankStage) private readonly rerank: RerankStage,
+    @Inject(GenerateStage) private readonly generate: GenerateStage,
   ) {}
 
   async ask(scope: AccessScope, question: string, opts: AskOptions, hooks: AskHooks = {}): Promise<AskResult> {
-    const { gateCosine, relativeCosineMargin, maxContextChars, ...searchOpts } = opts;
+    const { gateCosine, relativeCosineMargin, maxContextChars, rerank, ...searchOpts } = opts;
+    if (rerank && rerank.pool < searchOpts.topK) {
+      throw new Error(`rerank.pool (${rerank.pool}) must be >= topK (${searchOpts.topK})`);
+    }
     const asOf = searchOpts.asOf ?? new Date().toISOString().slice(0, 10);
     const started = Date.now();
 
-    let t = Date.now();
-    const [embedding] = await this.embeddings.embed([question], "query");
+    // 1. Embed the question.
+    const embedded = await this.embed.run(question);
     const debug: AskResult["debug"] = {
-      embedding: { dim: embedding!.length, preview: embedding!.slice(0, 8), ms: Date.now() - t },
+      embedding: { dim: embedded.vector.length, preview: embedded.vector.slice(0, 8), ms: embedded.ms },
       retrieved: [],
       searchMs: 0,
       bestCosine: -1,
@@ -92,85 +122,75 @@ export class AnswerService {
       return { answer, debug };
     };
 
-    t = Date.now();
-    const retrieved = await this.store.search(scope, { ...searchOpts, asOf, text: question, embedding: embedding! });
-    debug.retrieved = retrieved;
-    debug.searchMs = Date.now() - t;
+    // 2. Search. When reranking, fetch a wider pool by relevance: precedence
+    //    would otherwise push relevant lower-tier chunks out before the reranker sees them.
+    const searched = await this.search.run({
+      scope,
+      query: {
+        ...searchOpts,
+        asOf,
+        text: question,
+        embedding: embedded.vector,
+        topK: rerank ? rerank.pool : searchOpts.topK,
+        orderBy: rerank ? "relevance" : searchOpts.orderBy,
+      },
+    });
+    debug.retrieved = searched.chunks;
+    debug.searchMs = searched.ms;
 
-    // 1. Evidence gate, before any model call.
-    const best = Math.max(-1, ...retrieved.map((c) => c.cosine ?? -1));
+    // 3. Evidence gate, before any model call (reranker included).
+    const best = Math.max(-1, ...searched.chunks.map((c) => c.cosine ?? -1));
     debug.bestCosine = best;
-    if (retrieved.length === 0 || best < gateCosine) {
-      debug.gate = retrieved.length === 0 ? "no visible chunks" : `best cosine ${best.toFixed(3)} < ${gateCosine}`;
+    if (searched.chunks.length === 0 || best < gateCosine) {
+      debug.gate = searched.chunks.length === 0 ? "no visible chunks" : `best cosine ${best.toFixed(3)} < ${gateCosine}`;
     }
     hooks.onStage?.("retrieved", debug);
-    if (debug.gate) {
-      return done(refusal("I could not find trustworthy information you have access to that answers this.", `gate: ${debug.gate}`));
+    if (debug.gate) return done(refusal(NOT_FOUND, `gate: ${debug.gate}`));
+
+    // 4. Rerank, then drop off-topic chunks.
+    let onTopic: ScoredChunk[];
+    if (rerank) {
+      const reranked = await this.rerank.run({ question, chunks: searched.chunks, topK: searchOpts.topK });
+      debug.rerank = { modelId: reranked.modelId, ms: reranked.ms, scores: reranked.scores, kept: reranked.chunks };
+      hooks.onStage?.("reranked", debug);
+      onTopic = reranked.chunks.filter((c) => reranked.scores[c.chunkId]! >= rerank.minScore);
+      debug.offTopic = reranked.chunks.filter((c) => !onTopic.includes(c));
+      if (onTopic.length === 0) {
+        debug.gate = `every reranked chunk scored below ${rerank.minScore}`;
+        return done(refusal(NOT_FOUND, `gate: ${debug.gate}`));
+      }
+    } else {
+      // Full-text-only hits (cosine null) are kept; the SQL minCosine already governs them.
+      const isOnTopic = (c: ScoredChunk) => c.cosine === null || c.cosine >= best - relativeCosineMargin;
+      onTopic = searched.chunks.filter(isOnTopic);
+      debug.offTopic = searched.chunks.filter((c) => !isOnTopic(c));
     }
 
-    // 2. Drop off-topic chunks, then versioning + authority, in code.
-    //    Full-text-only hits (cosine null) are kept; the SQL minCosine already governs them.
-    const isOnTopic = (c: ScoredChunk) => c.cosine === null || c.cosine >= best - relativeCosineMargin;
-    debug.offTopic = retrieved.filter((c) => !isOnTopic(c));
-    const evidence = resolveEvidence(retrieved.filter(isOnTopic));
+    // 5. Versioning + authority, in code.
+    const evidence = resolveEvidence(onTopic);
     debug.evidence = evidence;
     hooks.onStage?.("resolved", debug);
 
-    // 3. Generate, parse, one repair retry, then refuse. Never fall back to free text.
+    // 6. Prompt and generate.
     const user = buildUserPrompt(evidence, { question, asOf, maxContextChars });
     debug.prompt = { system: SYSTEM_PROMPT, user };
     hooks.onStage?.("prompted", debug);
-    const messages: { role: "user" | "assistant"; content: string }[] = [{ role: "user", content: user }];
+    const generated = await this.generate.run({
+      system: SYSTEM_PROMPT,
+      user,
+      onAttempt: () => hooks.onStage?.("generating", debug),
+      onDelta: hooks.onDelta,
+    });
+    debug.raw = generated.raw;
+    debug.generations = generated.generations;
+    debug.parseErrors = generated.parseErrors;
 
-    let parsed: ModelAnswer | undefined;
-    let lastError = "";
-    for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
-      hooks.onStage?.("generating", debug);
-      const { text, ...meta } = await this.llm.generate({
-        system: SYSTEM_PROMPT,
-        messages,
-        jsonSchema: MODEL_ANSWER_JSON_SCHEMA,
-        temperature: 0,
-        seed: 7,
-        onDelta: hooks.onDelta,
-      });
-      debug.raw.push(text);
-      debug.generations.push(meta);
-
-      const result = parseModelAnswer(text);
-      debug.parseErrors.push(result.ok ? null : result.error);
-      if (result.ok) parsed = result.value;
-      else {
-        lastError = result.error;
-        messages.push(
-          { role: "assistant", content: text },
-          { role: "user", content: `That reply was invalid: ${result.error}. Reply again with JSON matching the schema only.` },
-        );
-      }
-    }
-
-    if (!parsed) {
+    if (!generated.answer) {
+      const lastError = generated.parseErrors.at(-1) ?? "unknown";
       return done(refusal("I could not produce a reliable answer for this question.", `model output invalid twice: ${lastError}`));
     }
 
-    // 4. Validate against the evidence the model was actually given.
-    return done(validateAnswer(parsed, evidence));
+    // 7. Validate against the evidence the model was actually given.
+    return done(validateAnswer(generated.answer, evidence));
   }
-}
-
-export function parseModelAnswer(text: string): { ok: true; value: ModelAnswer } | { ok: false; error: string } {
-  // Some models wrap JSON in a code fence even in JSON mode.
-  const body = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-  let json: unknown;
-  try {
-    json = JSON.parse(body);
-  } catch {
-    return { ok: false, error: "not valid JSON" };
-  }
-  const result = ModelAnswerSchema.safeParse(json);
-  if (result.success) return { ok: true, value: result.data };
-  return {
-    ok: false,
-    error: result.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; "),
-  };
 }

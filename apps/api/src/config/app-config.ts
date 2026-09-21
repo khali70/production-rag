@@ -22,6 +22,7 @@ export class AppConfig {
   readonly authorityFile: string;
 
   readonly embedding: {
+    provider: Env["EMBEDDING_PROVIDER"];
     modelId: string;
     dim: number;
     dtype: Env["EMBEDDING_DTYPE"];
@@ -30,6 +31,7 @@ export class AppConfig {
   };
 
   readonly reranker: {
+    provider: Env["RERANKER_PROVIDER"];
     modelId: string;
     dtype: Env["RERANKER_DTYPE"];
   };
@@ -53,6 +55,7 @@ export class AppConfig {
     this.packDir = fromRoot(env.PACK_DIR);
     this.authorityFile = fromRoot(env.AUTHORITY_FILE);
     this.embedding = {
+      provider: env.EMBEDDING_PROVIDER,
       modelId: env.EMBEDDING_MODEL_ID,
       dim: env.EMBEDDING_DIM,
       dtype: env.EMBEDDING_DTYPE,
@@ -60,6 +63,7 @@ export class AppConfig {
       allowRemote: env.EMBEDDING_ALLOW_REMOTE,
     };
     this.reranker = {
+      provider: env.RERANKER_PROVIDER,
       modelId: env.RERANKER_MODEL_ID,
       dtype: env.RERANKER_DTYPE,
     };

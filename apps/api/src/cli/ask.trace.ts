@@ -85,10 +85,11 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     `LLM:       ${ctx.llm.modelId} @ ${ctx.llm.baseUrl}`,
     `Options:   topK=${o.topK} order=${o.orderBy} statuses=${(o.includeStatuses ?? ["current"]).join(",")} ` +
       `asOf=${o.asOf ?? "today"} minCosine=${o.minCosine ?? "none"} gateCosine=${o.gateCosine} ` +
-      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars}`,
+      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars} ` +
+      `rerank=${o.rerank ? `pool:${o.rerank.pool},min:${o.rerank.minScore}` : "off"}`,
     `Total:     ${(debug.totalMs / 1000).toFixed(1)} s`,
     "",
-    "Pipeline:  embed -> retrieve -> gate -> off-topic filter -> resolve authority -> prompt -> LLM -> parse -> validate -> answer",
+    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> resolve authority -> prompt -> LLM -> parse -> validate -> answer`,
   );
 
   // 1. Embedding
@@ -113,11 +114,13 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
   if (debug.retrieved.length === 0) out.push("(no chunks visible to this user matched)");
   for (const [i, c] of debug.retrieved.entries()) {
     const dropped = debug.offTopic.includes(c);
+    const cut = debug.rerank !== undefined && !debug.rerank.kept.includes(c);
+    const rerankScore = debug.rerank?.scores[c.chunkId];
     out.push(
-      `#${i + 1}  ${c.source.documentId} v${c.source.version}  "${c.source.title}"${dropped ? "   [DROPPED: off-topic]" : ""}`,
+      `#${i + 1}  ${c.source.documentId} v${c.source.version}  "${c.source.title}"${dropped ? "   [DROPPED: off-topic]" : ""}${cut ? "   [CUT: below rerank topK]" : ""}`,
       `     section: ${c.source.sectionPath.join(" > ")}   chunk ${c.source.chunkIndex}`,
       `     tier=${c.tier} level=${c.level} rank=${c.authorityRank} status=${c.status} from=${c.effectiveFrom} trust=${c.trust}`,
-      `     cosine=${fmtCos(c.cosine)}  rrf=${c.score.toFixed(4)}`,
+      `     cosine=${fmtCos(c.cosine)}  rrf=${c.score.toFixed(4)}${rerankScore === undefined ? "" : `  rerank=${rerankScore.toFixed(4)}`}`,
       `     relations: ${c.relations.length === 0 ? "none" : c.relations.map((r) => `${r.kind} ${r.documentId} v${r.version}`).join("; ")}`,
       `     text: ${oneLine(c.text, 240)}`,
       "",
@@ -136,14 +139,17 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
   if (!debug.gate) {
     // 4. Off-topic filter
     const floor = debug.bestCosine - o.relativeCosineMargin;
-    out.push(step(4, "DROP OFF-TOPIC CHUNKS"));
+    out.push(step(4, o.rerank ? "RERANK, THEN DROP OFF-TOPIC CHUNKS" : "DROP OFF-TOPIC CHUNKS", debug.rerank ? `${debug.rerank.ms} ms` : undefined));
     out.push(
-      `Keep chunks with cosine >= best - margin = ${debug.bestCosine.toFixed(3)} - ${o.relativeCosineMargin} = ${floor.toFixed(3)}`,
+      debug.rerank
+        ? `Reranker ${debug.rerank.modelId} kept the top ${debug.rerank.kept.length} of ${debug.retrieved.length}; keep those with rerank >= ${o.rerank!.minScore}`
+        : `Keep chunks with cosine >= best - margin = ${debug.bestCosine.toFixed(3)} - ${o.relativeCosineMargin} = ${floor.toFixed(3)}`,
       "",
     );
     if (debug.offTopic.length === 0) out.push("Nothing dropped.");
     for (const c of debug.offTopic) {
-      out.push(`Dropped: ${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}] cosine=${fmtCos(c.cosine)}`);
+      const score = debug.rerank ? `rerank=${debug.rerank.scores[c.chunkId]!.toFixed(4)}` : `cosine=${fmtCos(c.cosine)}`;
+      out.push(`Dropped: ${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}] ${score}`);
     }
 
     // 5. Authority

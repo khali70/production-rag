@@ -27,6 +27,8 @@ export const envSchema = z.object({
   PACK_DIR: z.string().min(1),
   AUTHORITY_FILE: z.string().min(1),
 
+  /** "fake" is a deterministic hash embedder for tests. Changing provider or model needs a re-ingest. */
+  EMBEDDING_PROVIDER: z.enum(["transformers", "fake"]),
   EMBEDDING_MODEL_ID: z.string().min(1),
   EMBEDDING_DIM: z.coerce.number().int().positive(),
   EMBEDDING_DTYPE: z.enum(["fp32", "fp16", "q8", "int8", "uint8", "q4"]),
@@ -34,6 +36,7 @@ export const envSchema = z.object({
   EMBEDDING_ALLOW_REMOTE: bool,
 
   /** Cross-encoder for optional reranking. Shares EMBEDDING_CACHE_DIR and EMBEDDING_ALLOW_REMOTE. */
+  RERANKER_PROVIDER: z.enum(["transformers", "fake"]),
   RERANKER_MODEL_ID: z.string().min(1),
   RERANKER_DTYPE: z.enum(["fp32", "fp16", "q8", "int8", "uint8", "q4"]),
 

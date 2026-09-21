@@ -20,6 +20,7 @@ import { formatAnswer, formatTrace } from "./ask.trace.js";
  *
  *   node dist/cli/ask.js --user u-proc-310 "What is our process for approving a new enterprise vendor?"
  *   node dist/cli/ask.js --user u-proc-310 --trace-file traces/vendor.txt "vendor approval process"
+ *   node dist/cli/ask.js --user u-proc-310 --rerank --rerank-pool 20 "who approves a 40k vendor"
  *
  * The trace holds document text: it is for local debugging and is gitignored.
  */
@@ -28,14 +29,17 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       user: { type: "string" },
-      k: { type: "string", default: "8" },
+      k: { type: "string", default: "3" },
       order: { type: "string", default: "precedence" },
       statuses: { type: "string", default: "current" },
       "min-cosine": { type: "string" },
-      "gate-cosine": { type: "string", default: "0.5" },
+      "gate-cosine": { type: "string", default: "0.6" },
       "cosine-margin": { type: "string", default: "0.15" },
       "as-of": { type: "string" },
       "max-context-chars": { type: "string", default: "12000" },
+      rerank: { type: "boolean", default: false },
+      "rerank-pool": { type: "string", default: "5" },
+      "rerank-min": { type: "string", default: "0.1" },
       "trace-file": { type: "string" },
       quiet: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -45,7 +49,7 @@ async function main(): Promise<void> {
   const question = positionals.join(" ").trim();
   if (!values.user || question.length === 0) {
     throw new Error(
-      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current] [--min-cosine N] [--gate-cosine 0.5] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--trace-file path.txt] [--quiet] [--json] "question"',
+      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current] [--min-cosine N] [--gate-cosine 0.5] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
     );
   }
 
@@ -64,12 +68,26 @@ async function main(): Promise<void> {
     gateCosine: num("gate-cosine", values["gate-cosine"], (n) => n >= -1 && n <= 1),
     relativeCosineMargin: num("cosine-margin", values["cosine-margin"], (n) => n >= 0 && n <= 2),
     maxContextChars: num("max-context-chars", values["max-context-chars"], (n) => Number.isInteger(n) && n > 0),
+    rerank: values.rerank
+      ? {
+        pool: num("rerank-pool", values["rerank-pool"], (n) => Number.isInteger(n) && n > 0),
+        minScore: num("rerank-min", values["rerank-min"], (n) => n >= 0 && n <= 1),
+      }
+      : undefined,
   };
 
   const startedAt = new Date();
+  const stamp = startedAt.toISOString().replace(/[:.]/g, "-");
+  // Every run gets its own trace file. A provided --trace-file is a template:
+  // the run stamp is injected before its extension so runs never overwrite.
+  const stampName = (p: string): string => {
+    const dot = p.lastIndexOf(".");
+    const slash = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+    return dot > slash ? `${p.slice(0, dot)}-${stamp}${p.slice(dot)}` : `${p}-${stamp}`;
+  };
   const tracePath = resolve(
     REPO_ROOT,
-    values["trace-file"] ?? `traces/ask-${startedAt.toISOString().replace(/[:.]/g, "-")}-${values.user}.txt`,
+    values["trace-file"] ? stampName(values["trace-file"]) : `traces/ask-${stamp}-${values.user}.txt`,
   );
 
   // Live progress goes to stderr so --json stdout stays clean.
@@ -113,9 +131,13 @@ async function main(): Promise<void> {
                 ? `[3] evidence gate: REFUSE (${d.gate})\n`
                 : `[3] evidence gate: pass (best cosine ${d.bestCosine.toFixed(3)} >= ${options.gateCosine})\n`,
             );
+            if (!d.gate && options.rerank) live(`[3b] reranking ${d.retrieved.length} chunks... `);
+            break;
+          case "reranked":
+            live(`kept ${d.rerank!.kept.length} (${d.rerank!.modelId}, ${d.rerank!.ms} ms)\n`);
             break;
           case "resolved":
-            live(`[4] off-topic filter: dropped ${d.offTopic.length} chunk(s)\n[5] authority:\n`);
+            live(`[4] off-topic filter${options.rerank ? ` (rerank < ${options.rerank.minScore})` : ""}: dropped ${d.offTopic.length} chunk(s)\n[5] authority:\n`);
             for (const e of d.evidence) {
               live(`      ${e.id} ${e.role.padEnd(10)} ${e.documentId} v${e.version} "${e.title}"${e.note ? `  (${e.note})` : ""}\n`);
             }
