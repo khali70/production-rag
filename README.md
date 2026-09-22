@@ -4,7 +4,7 @@
 
 ### Enterprise knowledge answers that are grounded, permission-safe, and honest when they don't know.
 
-A CPU-only Retrieval-Augmented Generation service where **code decides security and trust**, and the LLM only writes prose from evidence that was already filtered.
+A fully offline Retrieval-Augmented Generation service running on local CPU models (no GPU, no cloud, no API keys), where **code decides security and trust**, and the LLM only writes prose from evidence that was already filtered.
 
 ![Node](https://img.shields.io/badge/node-%3E%3D22.12-339933?logo=node.js&logoColor=white)
 ![NestJS](https://img.shields.io/badge/NestJS-12-E0234E?logo=nestjs&logoColor=white)
@@ -12,6 +12,7 @@ A CPU-only Retrieval-Augmented Generation service where **code decides security 
 ![pgvector](https://img.shields.io/badge/Postgres-pgvector-4169E1?logo=postgresql&logoColor=white)
 ![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen)
 ![GPU](https://img.shields.io/badge/GPU-not%20required-lightgrey)
+![Offline](https://img.shields.io/badge/runs-100%25%20offline-blueviolet)
 
 Built for [Code Quests #88 (Kentrick.ai): Production RAG](https://code-quests.com/quests-details/?id=88)
 
@@ -73,7 +74,7 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 - **Structured, cited answers.** The LLM returns `claims[]` with `citation_ids`; uncited claims are dropped and reported as warnings.
 - **Supply-chain integrity.** Pack files are checked against `checksums.sha256` before ingest.
 - **Hexagonal architecture.** Ports for embeddings, reranker, LLM and vector store with real and fake adapters, so every stage is testable offline and swappable (e.g. Azure OpenAI + Azure AI Search in production).
-- **Fully local, CPU only.** In-process ONNX embeddings via `@huggingface/transformers`, Postgres + pgvector in Docker, any OpenAI-compatible local LLM (Ollama, llama.cpp, vLLM).
+- **Fully offline, CPU only.** See [Offline CPU models](#offline-cpu-models). In-process ONNX embeddings via `@huggingface/transformers`, Postgres + pgvector in Docker, any OpenAI-compatible local LLM (Ollama, llama.cpp, vLLM).
 
 ## Tech stack
 
@@ -86,6 +87,69 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 | LLM | Any OpenAI-compatible endpoint, default `qwen3.5:4b` on Ollama |
 | Config | `@nestjs/config` + zod, fail-fast validation |
 | Tests | Vitest (unit + pgvector contract tests) |
+
+## Offline CPU models
+
+Every model runs on your machine, on CPU. No GPU, no API key, no cloud account. After the first download, the whole pipeline works with the network unplugged.
+
+| Role | Model | Runtime | Size on disk | Why this one |
+|---|---|---|---|---|
+| Embeddings | [`Snowflake/snowflake-arctic-embed-m-v1.5`](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) (768d, fp32) | In-process ONNX via `@huggingface/transformers` | ~420 MB | Strong retrieval quality for its size, CLS pooling + query instruction, no extra server to run |
+| Reranker (optional) | [`Xenova/bge-reranker-base`](https://huggingface.co/Xenova/bge-reranker-base) (q8) | In-process ONNX | ~280 MB | Cross-encoder for sharper ordering when `--rerank` is on, loaded only on first use |
+| Answer LLM | [`qwen3.5:4b`](https://ollama.com/library/qwen3.5) (Q4_K_M, 4.7B params) | [Ollama](https://ollama.com), OpenAI-compatible API | ~3.4 GB | Small enough for a laptop CPU, reliable JSON output, Apache 2.0 license |
+
+### Set up the models once
+
+The embedding and reranker models download automatically on first use into `.cache/models`. The LLM comes from Ollama:
+
+```bash
+ollama pull qwen3.5:4b
+```
+
+Optional: give the model an 8K context window so larger evidence sets fit. Create a file named `Modelfile` with:
+
+```
+FROM qwen3.5:4b
+PARAMETER num_ctx 8192
+```
+
+```bash
+ollama create qwen3.5-4b-8k -f Modelfile
+```
+
+Then set `LLM_MODEL_ID=qwen3.5-4b-8k` in `.env`.
+
+### Go fully offline
+
+After the first ingest has cached the models, set this in `.env`:
+
+```
+EMBEDDING_ALLOW_REMOTE=false
+LLM_BASE_URL=http://localhost:11434
+LLM_API_KEY=
+```
+
+Nothing leaves the machine from then on: embeddings and reranking run inside the Node process, and the LLM is served by local Ollama.
+
+### Measured on a laptop
+
+Apple M1, 16 GB RAM, CPU only, question *"What is our process for approving a new enterprise vendor?"*:
+
+| Stage | Time |
+|---|---|
+| Query embedding | ~1.4 s |
+| Hybrid search (pgvector) | ~0.1 s |
+| LLM answer (879 tokens in, 360 out) | ~104 s |
+
+Refusals are fast: when no permitted evidence passes the gate, the LLM is never called and the answer returns in under 2 s.
+
+### Swap models
+
+Models are behind ports, so switching is a config change:
+
+- **Another local LLM:** any OpenAI-compatible server (llama.cpp, LM Studio, vLLM). Set `LLM_BASE_URL` and `LLM_MODEL_ID`.
+- **Another embedding model:** set `EMBEDDING_MODEL_ID` and `EMBEDDING_DIM`, then run `pnpm ingest --reindex`. The index records the model, dim, dtype and prefix scheme, and search refuses to run against a mismatched index instead of returning quietly wrong results.
+- **Hosted in production:** point the same adapter at Azure OpenAI.
 
 ## Quick start
 
