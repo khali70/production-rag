@@ -5,14 +5,11 @@
 export type ModelInfo = {
   id: string;
   provider: "openai-compat" | "fake";
-  supportsJsonSchema: boolean;
 };
 
 export type GenerateRequest = {
   system: string;
   messages: { role: "user" | "assistant"; content: string }[];
-  /** JSON Schema the reply must match. The caller still validates the reply. */
-  jsonSchema?: { name: string; schema: object };
   /** Defaults to 0: answers must be repeatable. */
   temperature?: number;
   seed?: number;

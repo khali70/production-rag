@@ -103,3 +103,26 @@ describe("answer pipeline", () => {
     await expect(service.ask(scope, "q", opts({ rerank: { pool: 1, minScore: 0 } }))).rejects.toThrow(/pool/);
   });
 });
+
+describe("plain-text answers", () => {
+  it("asks for text, not JSON, and returns the reply with the sources appended", async () => {
+    const chunks = [chunk("VENDOR", "vendor approval requires procurement sign off", 0.7)];
+    const store = { search: async () => chunks };
+    const llm = new FakeLlm(() => "Procurement signs off on vendor approval.");
+    const service = new AnswerService(
+      new EmbedStage(new FakeEmbeddingAdapter()),
+      new SearchStage(store as unknown as VectorStorePort),
+      new RerankStage(new FakeReranker()),
+      new GenerateStage(llm),
+    );
+
+    const { answer } = await service.ask(scope, "vendor approval", opts());
+
+    expect(llm.calls).toHaveLength(1);
+    expect(llm.calls[0]).not.toHaveProperty("jsonSchema");
+    expect(answer.status).toBe("answered");
+    expect(answer.message).toBe(
+      "Procurement signs off on vendor approval.\n\nSources:\n[C1] VENDOR (VENDOR v1.0, Document) - primary",
+    );
+  });
+});

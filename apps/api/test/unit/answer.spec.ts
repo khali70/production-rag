@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { rankOf } from "../../src/domain/tier.js";
 import type { Relation, ScoredChunk, Status, Tier } from "../../src/domain/types.js";
-import { validateAnswer } from "../../src/modules/answer/answer.validator.js";
-import { parseModelAnswer } from "../../src/modules/answer/answer.service.js";
+import { REFUSAL, finalizeAnswer } from "../../src/modules/answer/answer.finalizer.js";
 import { resolveEvidence } from "../../src/modules/answer/evidence.resolver.js";
 import { buildUserPrompt, escapeDocText } from "../../src/modules/answer/prompt.builder.js";
 
@@ -129,79 +128,75 @@ describe("prompt builder", () => {
   });
 });
 
-describe("answer validator", () => {
+describe("answer finalizer", () => {
   const docs = resolveEvidence([
     chunk("POL", { text: "Vendors above USD 100,000 need CFO approval." }),
     chunk("REC", { tier: "record", text: "Case record." }),
   ]);
-  const base = { summary: "Vendors need approval.", conflicts: [], missing: [] };
+  const ctx = { question: "Who approves a vendor?", asOf: "2026-09-22" };
 
-  it("keeps a claim whose numbers appear in the cited text", () => {
-    const a = validateAnswer(
-      { ...base, status: "answered", claims: [{ text: "Above USD 100000 the CFO approves.", citation_ids: ["C1"] }] },
-      docs,
-    );
+  it("appends every evidence document as a source, in prompt order", () => {
+    const a = finalizeAnswer("Above USD 100000 the CFO approves.", docs, ctx);
     expect(a.status).toBe("answered");
-    expect(a.claims).toHaveLength(1);
-    expect(a.claims[0]!.citations[0]!.source.documentId).toBe("POL");
+    expect(a.text).toBe("Above USD 100000 the CFO approves.");
+    expect(a.sources.map((s) => [s.id, s.source.documentId, s.role])).toEqual([
+      ["C1", "POL", "primary"],
+      ["C2", "REC", "supporting"],
+    ]);
+    expect(a.message).toBe(
+      "Above USD 100000 the CFO approves.\n\nSources:\n" +
+        "[C1] POL (POL v1.0, Document) - primary\n" +
+        "[C2] REC (REC v1.0, Document) - supporting",
+    );
   });
 
-  it("drops a claim with an invented number and refuses when nothing is left", () => {
-    const a = validateAnswer(
-      { ...base, status: "answered", claims: [{ text: "Support responds within 4 hours.", citation_ids: ["C1"] }] },
-      docs,
-    );
-    expect(a.status).toBe("refused");
+  it("replaces a sources block the model wrote itself", () => {
+    const a = finalizeAnswer("The CFO approves.\n\nSources:\n- Made Up Policy", docs, ctx);
+    expect(a.text).toBe("The CFO approves.");
+    expect(a.message).not.toContain("Made Up Policy");
+  });
+
+  it("downgrades an answer with a number the documents do not contain", () => {
+    const a = finalizeAnswer("Support responds within 4 hours.", docs, ctx);
+    expect(a.status).toBe("qualified");
     expect(a.warnings.join(" ")).toContain("4 not found");
   });
 
-  it("drops unknown citation ids", () => {
-    const a = validateAnswer(
-      {
-        ...base,
-        status: "answered",
-        claims: [
-          { text: "CFO approves.", citation_ids: ["C9"] },
-          { text: "Approval is needed.", citation_ids: ["C1"] },
-        ],
-      },
-      docs,
-    );
-    expect(a.status).toBe("qualified");
-    expect(a.claims).toHaveLength(1);
+  it("accepts numbers from the question and today's date", () => {
+    const a = finalizeAnswer("For a 40 day contract, as of 2026-09-22, the CFO approves.", docs, {
+      ...ctx,
+      question: "Who approves a 40 day contract?",
+    });
+    expect(a.status).toBe("answered");
   });
 
-  it("downgrades a claim backed only by a record", () => {
-    const a = validateAnswer({ ...base, status: "answered", claims: [{ text: "A case exists.", citation_ids: ["C2"] }] }, docs);
-    expect(a.status).toBe("qualified");
+  it("accepts document ids and k/m shorthand from the question", () => {
+    const a = finalizeAnswer("Under POL-014 v1.0, a 40,000 contract needs the CFO.", resolveEvidence([
+      chunk("POL-014", { text: "Contracts need CFO approval." }),
+    ]), { ...ctx, question: "Who approves a 40k contract?" });
+    expect(a.warnings).toEqual([]);
+    expect(a.status).toBe("answered");
   });
 
-  it("replaces a summary that invents a number", () => {
-    const a = validateAnswer(
-      { ...base, summary: "SLA is 99.9%.", status: "answered", claims: [{ text: "CFO approval is needed.", citation_ids: ["C1"] }] },
-      docs,
-    );
-    expect(a.summary).toBe("CFO approval is needed.");
-    expect(a.status).toBe("qualified");
+  it("checks k/m shorthand in the reply as the full number", () => {
+    expect(finalizeAnswer("Above $100k the CFO approves.", docs, ctx).status).toBe("answered");
+    expect(finalizeAnswer("Above $50k the CFO approves.", docs, ctx).warnings.join(" ")).toContain("50000 not found");
   });
 
-  it("downgrades when a modifier of a cited document is ignored", () => {
-    const withMemo = resolveEvidence([
-      chunk("POL"),
-      chunk("MEMO", { tier: "advisory", relations: [{ kind: "qualifies", documentId: "POL", version: "1.0", scope: "renewals" }] }),
-    ]);
-    const a = validateAnswer({ ...base, status: "answered", claims: [{ text: "Policy applies.", citation_ids: ["C1"] }] }, withMemo);
-    expect(a.status).toBe("qualified");
-  });
-});
-
-describe("parseModelAnswer", () => {
-  it("accepts fenced JSON", () => {
-    const r = parseModelAnswer('```json\n{"status":"refused","summary":"x","claims":[],"conflicts":[],"missing":[]}\n```');
-    expect(r.ok).toBe(true);
+  it("strips markdown emphasis from the reply", () => {
+    expect(finalizeAnswer("- **CFO** approves.", docs, ctx).text).toBe("- CFO approves.");
   });
 
-  it("rejects free text", () => {
-    expect(parseModelAnswer("The answer is yes.").ok).toBe(false);
+  it("treats the refusal sentence as a refusal with no sources", () => {
+    const a = finalizeAnswer(`${REFUSAL} The policy does not cover regulated vendors.`, docs, ctx);
+    expect(a.status).toBe("refused");
+    expect(a.sources).toEqual([]);
+    expect(a.message).not.toContain("Sources:");
+  });
+
+  it("refuses an empty reply", () => {
+    const a = finalizeAnswer("   ", docs, ctx);
+    expect(a.status).toBe("refused");
+    expect(a.warnings).toEqual(["model returned no text"]);
   });
 });

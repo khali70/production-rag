@@ -1,23 +1,18 @@
+import { REFUSAL } from "../../modules/answer/answer.finalizer.js";
 import { LlmPort, type GenerateRequest, type GenerateResult, type ModelInfo } from "../../ports/llm.port.js";
 
 /**
  * Deterministic LLM for tests. The responder sees the full request, so a test
- * can return a canned answer, malformed JSON, or an invented citation.
+ * can return a canned answer, an empty reply, or an invented number.
  * The default refuses, which is the safe behaviour.
  */
 export class FakeLlm extends LlmPort {
-  readonly info: ModelInfo = { id: "fake", provider: "fake", supportsJsonSchema: true };
+  readonly info: ModelInfo = { id: "fake", provider: "fake" };
   readonly calls: GenerateRequest[] = [];
 
   constructor(
     private readonly responder: (req: GenerateRequest, call: number) => string = () =>
-      JSON.stringify({
-        status: "refused",
-        summary: "Fake LLM: no answer.",
-        claims: [],
-        conflicts: [],
-        missing: [],
-      }),
+      `${REFUSAL} Fake LLM: no answer.`,
   ) {
     super();
   }

@@ -20,7 +20,7 @@ export class OpenAiCompatLlm extends LlmPort {
 
   constructor(private readonly cfg: AppConfig["llm"]) {
     super();
-    this.info = { id: cfg.modelId, provider: "openai-compat", supportsJsonSchema: true };
+    this.info = { id: cfg.modelId, provider: "openai-compat" };
   }
 
   async generate(req: GenerateRequest): Promise<GenerateResult> {
@@ -47,12 +47,6 @@ export class OpenAiCompatLlm extends LlmPort {
     // /no_think alone is ignored by newer Qwen builds; Ollama honours reasoning_effort "none".
     if (this.cfg.disableThinking) body.reasoning_effort = "none";
     if (req.seed !== undefined) body.seed = req.seed;
-    if (req.jsonSchema) {
-      body.response_format = {
-        type: "json_schema",
-        json_schema: { name: req.jsonSchema.name, schema: req.jsonSchema.schema, strict: true },
-      };
-    }
 
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.cfg.apiKey.length > 0) headers.authorization = `Bearer ${this.cfg.apiKey}`;

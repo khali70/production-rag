@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rag-api",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-c", "cd apps/api && PORT=3011 node dist/main.js"],
+      "port": 3011
+    }
+  ]
+}

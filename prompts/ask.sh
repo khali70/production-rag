@@ -4,7 +4,7 @@
 # trace of every step:
 #
 #   embed -> search -> gate -> [rerank] -> off-topic filter -> authority
-#         -> prompt -> LLM -> parse -> validate -> answer
+#         -> prompt -> LLM -> finalize -> answer
 #
 # Usage:
 #   pnpm --filter api trace "who approves a regulated vendor"

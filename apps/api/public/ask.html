@@ -90,9 +90,9 @@
     text-transform: uppercase; letter-spacing: .04em; border: 1px solid currentColor;
   }
   .answered { color: var(--ok); } .qualified { color: var(--warn); } .refused { color: var(--bad); }
-  .summary { font-size: 16px; margin: 10px 0 4px; }
-  ul.claims { padding-left: 18px; margin: 8px 0; }
-  ul.claims li { margin-bottom: 8px; }
+  .message { font-size: 15px; line-height: 1.6; margin: 10px 0 4px; white-space: pre-wrap; }
+  ol.sources { padding-left: 0; margin: 6px 0 0; list-style: none; }
+  ol.sources li { margin-bottom: 6px; }
   .cite {
     display: inline-block; font-family: var(--mono); font-size: 11px; padding: 0 6px; margin-left: 4px;
     border-radius: 4px; background: var(--soft); color: var(--accent); cursor: help;
@@ -343,10 +343,10 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- render ----
-function cites(list) {
-  return (list || []).map((c) =>
-    `<span class="cite" title="${esc(`${c.source.documentId} v${c.source.version} - ${c.source.title}${c.source.sectionPath?.length ? " > " + c.source.sectionPath.join(" > ") : ""}`)}">${esc(c.id)} ${esc(c.role)}</span>`
-  ).join("");
+function sourceList(list) {
+  return `<ol class="sources">${list.map(({ id, role, source: s }) =>
+    `<li><span class="cite">${esc(id)} ${esc(role)}</span> ${esc(s.title)} <span class="hint">(${esc(s.documentId)} v${esc(s.version)}${s.sectionPath?.length ? ", " + esc(s.sectionPath.join(" > ")) : ""})</span></li>`
+  ).join("")}</ol>`;
 }
 
 function render({ answer: a, diagnostics: d }, wallMs) {
@@ -360,10 +360,8 @@ function render({ answer: a, diagnostics: d }, wallMs) {
   $("out").innerHTML = `
     <div class="panel">
       <span class="badge ${esc(a.status)}">${esc(a.status)}</span>
-      <p class="summary">${esc(a.summary)}</p>
-      ${a.claims.length ? `<h2>Claims</h2><ul class="claims">${a.claims.map((c) => `<li>${esc(c.text)}${cites(c.citations)}</li>`).join("")}</ul>` : ""}
-      ${a.conflicts.length ? `<h2>Conflicts</h2>${a.conflicts.map((c) => `<div class="note bad">${esc(c.description)}${cites(c.citations)}</div>`).join("")}` : ""}
-      ${a.missing.length ? `<h2>Missing</h2><ul class="claims">${a.missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
+      <div class="message">${esc(a.text)}</div>
+      ${a.sources.length ? `<h2>Sources</h2>${sourceList(a.sources)}` : ""}
       ${a.warnings.length ? `<h2>Warnings</h2>${a.warnings.map((w) => `<div class="note">${esc(w)}</div>`).join("")}` : ""}
     </div>
 
@@ -384,7 +382,6 @@ function render({ answer: a, diagnostics: d }, wallMs) {
       </div>
       <div class="hint">best ${fmt(best)} | gate ${gate.toFixed(2)}${d.gate ? ` | <span class="refused">refused: ${esc(d.gate)}</span>` : ""}</div>
       ${d.retrieved.length === 0 && $("minCosineOn").checked ? `<div class="note">Min cosine is on (${(+$("minCosine").value).toFixed(2)}). The SQL floor drops every chunk below it, so nothing reached the gate. Lower it or turn it off.</div>` : ""}
-      ${d.parseErrors.some(Boolean) ? `<h2>Parse errors</h2>${d.parseErrors.filter(Boolean).map((e) => `<div class="note bad">${esc(e)}</div>`).join("")}` : ""}
     </div>
 
     ${embeddingPanel(d.embedding)}
@@ -420,7 +417,7 @@ function render({ answer: a, diagnostics: d }, wallMs) {
     ${llmPanel(d)}
 
     <div class="panel">
-      <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify({ answer: a, diagnostics: { ...d, embedding: { ...d.embedding, vector: `[${d.embedding.vector.length} values]` } } }, null, 2))}</pre></details>
+      <details><summary>Full API response</summary><pre>${esc(JSON.stringify({ answer: a, diagnostics: { ...d, embedding: { ...d.embedding, vector: `[${d.embedding.vector.length} values]` } } }, null, 2))}</pre></details>
     </div>`;
   wire(d);
 }
@@ -480,10 +477,6 @@ function drawHeat(v) {
 }
 
 // ---- llm panel ----
-function pretty(raw) {
-  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
-}
-
 function llmPanel(d) {
   const L = d.llm;
   if (!L.prompt) {
@@ -491,11 +484,9 @@ function llmPanel(d) {
   }
   const attempts = L.raw.map((raw, i) => {
     const g = d.generations[i];
-    const err = d.parseErrors[i];
     return `
-      <div class="attempt">Attempt ${i + 1}${g ? ` | ${(g.latencyMs / 1000).toFixed(1)} s | ${g.usage.inputTokens} in / ${g.usage.outputTokens} out | ${esc(g.modelId)}` : ""}
-        | ${err ? `<span class="refused">parse error: ${esc(err)}</span>` : `<span class="answered">parsed</span>`}</div>
-      <pre>${esc(pretty(raw))}</pre>`;
+      <div class="attempt">${g ? `${(g.latencyMs / 1000).toFixed(1)} s | ${g.usage.inputTokens} in / ${g.usage.outputTokens} out | ${esc(g.modelId)}` : ""}</div>
+      <pre>${esc(raw)}</pre>`;
   }).join("");
   const thinking = L.reasoning.filter((r) => r && r.trim());
   const tabs = [

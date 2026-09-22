@@ -154,7 +154,6 @@ export class AskController {
           note: e.note ?? null,
         })),
         generations: d.generations,
-        parseErrors: d.parseErrors,
         totalMs: d.totalMs,
       },
     };

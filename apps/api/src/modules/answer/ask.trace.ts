@@ -1,4 +1,4 @@
-import type { Answer, Citation } from "../modules/answer/answer.schema.js";
+import type { Answer } from "../modules/answer/answer.types.js";
 import type { AskOptions, AskResult } from "../modules/answer/answer.service.js";
 
 /**
@@ -36,35 +36,10 @@ function step(n: number, title: string, meta?: string): string {
   return `\n${RULE}\nSTEP ${n}  ${title}${meta ? `   (${meta})` : ""}\n${RULE}\n`;
 }
 
-export function formatCitations(cs: Citation[]): string {
-  return cs.map((c) => c.id).join(",");
-}
-
 export function formatAnswer(answer: Answer): string {
-  const out: string[] = [`STATUS: ${answer.status.toUpperCase()}`, "", answer.summary];
-  if (answer.claims.length > 0) {
-    out.push("", "Claims:");
-    for (const c of answer.claims) out.push(`  - ${c.text} [${formatCitations(c.citations)}]`);
-  }
-  if (answer.conflicts.length > 0) {
-    out.push("", "Conflicts:");
-    for (const c of answer.conflicts) out.push(`  - ${c.description} [${formatCitations(c.citations)}]`);
-  }
-  if (answer.missing.length > 0) {
-    out.push("", "Not covered by the sources:");
-    for (const m of answer.missing) out.push(`  - ${m}`);
-  }
-  const sources = new Map<string, Citation>();
-  for (const c of [...answer.claims, ...answer.conflicts].flatMap((x) => x.citations)) sources.set(c.id, c);
-  if (sources.size > 0) {
-    out.push("", "Sources:");
-    for (const c of [...sources.values()].sort((a, b) => a.id.localeCompare(b.id, undefined, { numeric: true }))) {
-      const s = c.source;
-      out.push(`  ${c.id}  ${s.title} (${s.documentId} v${s.version}, ${c.role})`, `      ${s.sourcePath}`);
-    }
-  }
+  const out: string[] = [`STATUS: ${answer.status.toUpperCase()}`, "", answer.message];
   if (answer.warnings.length > 0) {
-    out.push("", "Validator notes:");
+    out.push("", "Checks:");
     for (const w of answer.warnings) out.push(`  ! ${w}`);
   }
   return out.join("\n");
@@ -89,7 +64,7 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
       `rerank=${o.rerank ? `pool:${o.rerank.pool},min:${o.rerank.minScore}` : "off"}`,
     `Total:     ${(debug.totalMs / 1000).toFixed(1)} s`,
     "",
-    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> resolve authority -> prompt -> LLM -> parse -> validate -> answer`,
+    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> resolve authority -> prompt -> LLM -> finalize -> answer`,
   );
 
   // 1. Embedding
@@ -181,23 +156,21 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     }
 
     // 7. Generation
-    out.push(step(7, "LLM GENERATION", `${debug.generations.length} attempt(s)`));
+    out.push(step(7, "LLM GENERATION", `${debug.generations.length} call(s)`));
     for (const [i, g] of debug.generations.entries()) {
-      const err = debug.parseErrors[i];
       out.push(
         `${THIN}\nAttempt ${i + 1}: ${g.modelId}   ${(g.latencyMs / 1000).toFixed(1)} s   tokens in=${g.usage.inputTokens} out=${g.usage.outputTokens}\n${THIN}`,
       );
       const reasoning = ctx.reasoning[i]?.trim();
       if (reasoning) out.push("", "Model reasoning (thinking, not part of the answer):", "", indent(reasoning));
-      out.push("", "Raw output:", "", indent(debug.raw[i] ?? ""), "", `Parse: ${err === null ? "OK, matches the JSON schema" : `FAILED (${err})`}`, "");
+      out.push("", "Raw output:", "", indent(debug.raw[i] ?? ""), "");
     }
 
     // 8. Validation
-    out.push(step(8, "VALIDATE THE ANSWER AGAINST THE EVIDENCE (no LLM)"));
+    out.push(step(8, "FINALIZE THE ANSWER (no LLM)"));
     out.push(
-      "Checks: every citation id was in the prompt; every claim has a citation;",
-      "every number in a claim / the summary appears in the cited text;",
-      "claims rest on primary / modifier / secondary documents; modifiers are not ignored.",
+      "Detect a refusal; append the documents the model was given as sources;",
+      "flag any number in the answer that the documents, the question and today's date do not contain.",
       "",
     );
     if (answer.warnings.length === 0) out.push("All checks passed.");

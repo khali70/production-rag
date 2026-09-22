@@ -14,7 +14,7 @@ import { formatAnswer, formatTrace } from "./ask.trace.js";
 
 /**
  * Ask a question end to end as a given user: embed, retrieve, gate, resolve
- * authority, prompt, generate, validate. Prints live progress and the answer,
+ * authority, prompt, generate, finalize. Prints live progress and the answer,
  * and writes a full human-readable trace (every step, including the prompt)
  * to traces/ at the repo root.
  *
@@ -150,7 +150,7 @@ async function main(): Promise<void> {
             reasoning[attempt] = "";
             phase = null;
             elapsed();
-            live(`[7] calling ${llmId}, attempt ${attempt + 1}...\n`);
+            live(`[7] calling ${llmId}...\n`);
             break;
         }
       },
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
       },
     });
 
-    if (result.debug.generations.length > 0) live(`\n\n[8] validated (${elapsed()} since the model started)\n`);
+    if (result.debug.generations.length > 0) live(`\n\n[8] finalized (${elapsed()} since the model started)\n`);
 
     await mkdir(dirname(tracePath), { recursive: true });
     await writeFile(

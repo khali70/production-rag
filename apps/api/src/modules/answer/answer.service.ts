@@ -1,16 +1,14 @@
 import { Inject, Injectable } from "@nestjs/common";
 import type { AccessScope, ScoredChunk, SearchQuery } from "../../domain/types.js";
 import type { GenerateResult } from "../../ports/llm.port.js";
-import type { Answer } from "./answer.schema.js";
-import { validateAnswer } from "./answer.validator.js";
+import type { Answer } from "./answer.types.js";
+import { finalizeAnswer } from "./answer.finalizer.js";
 import { resolveEvidence, type EvidenceDoc } from "./evidence.resolver.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.builder.js";
 import { EmbedStage } from "./stages/embed.stage.js";
 import { GenerateStage } from "./stages/generate.stage.js";
 import { RerankStage } from "./stages/rerank.stage.js";
 import { SearchStage } from "./stages/search.stage.js";
-
-export { parseModelAnswer } from "./stages/generate.stage.js";
 
 export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
   /**
@@ -51,8 +49,6 @@ export type AskResult = {
     prompt?: { system: string; user: string };
     raw: string[];
     generations: Omit<GenerateResult, "text">[];
-    /** One entry per model attempt: null when the reply parsed. */
-    parseErrors: (string | null)[];
     totalMs: number;
   };
 };
@@ -65,12 +61,11 @@ export type AskHooks = {
   onDelta?: (kind: "content" | "reasoning", text: string) => void;
 };
 
-const refusal = (summary: string, warning: string): Answer => ({
+const refusal = (text: string, warning: string): Answer => ({
   status: "refused",
-  summary,
-  claims: [],
-  conflicts: [],
-  missing: [],
+  text,
+  message: text,
+  sources: [],
   warnings: [warning],
 });
 
@@ -81,10 +76,10 @@ const NOT_FOUND = "I could not find trustworthy information you have access to t
  * its own port, so swapping the embedder, reranker or LLM is a config change:
  *
  *   embed -> search -> gate -> [rerank] -> off-topic filter -> resolve authority
- *         -> prompt -> generate -> validate
+ *         -> prompt -> generate -> finalize (sources + number check)
  *
- * The gate, filter, resolver and validator are plain code: no model decides
- * what evidence is trusted.
+ * The gate, filter, resolver and finalizer are plain code: no model decides
+ * what evidence is trusted, and the sources list is never written by the model.
  */
 @Injectable()
 export class AnswerService {
@@ -119,7 +114,6 @@ export class AnswerService {
       evidence: [],
       raw: [],
       generations: [],
-      parseErrors: [],
       totalMs: 0,
     };
     hooks.onStage?.("embedded", debug);
@@ -189,14 +183,8 @@ export class AnswerService {
     });
     debug.raw = generated.raw;
     debug.generations = generated.generations;
-    debug.parseErrors = generated.parseErrors;
 
-    if (!generated.answer) {
-      const lastError = generated.parseErrors.at(-1) ?? "unknown";
-      return done(refusal("I could not produce a reliable answer for this question.", `model output invalid twice: ${lastError}`));
-    }
-
-    // 7. Validate against the evidence the model was actually given.
-    return done(validateAnswer(generated.answer, evidence));
+    // 7. Append the sources and check numbers against the evidence the model was given.
+    return done(finalizeAnswer(generated.text, evidence, { question, asOf }));
   }
 }

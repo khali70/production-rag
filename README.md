@@ -16,7 +16,7 @@ A fully offline Retrieval-Augmented Generation service running on local CPU mode
 
 Built for [Code Quests #88 (Kentrick.ai): Production RAG](https://code-quests.com/quests-details/?id=88)
 
-![Ask Playground answering a procurement question with cited claims](docs/screenshots/answer-procurement.png)
+![Ask Playground answering a procurement question with a cited answer](docs/screenshots/answer-procurement.png)
 
 </div>
 
@@ -29,7 +29,7 @@ Most RAG demos answer confidently. Enterprise RAG has to answer **correctly, for
 | Incident | What goes wrong in naive RAG | What this project does |
 |---|---|---|
 | **Wrong policy becomes the answer** | A retired v2.1 policy outranks the current v3 because it scored higher | Lifecycle + authority layer: status, supersedes/amends relations, org level and document tier decide precedence, not cosine |
-| **Convincing unsupported answer** | The model invents an SLA that the contract never states | Output validator: every claim must cite allowed evidence; unsupported numbers downgrade the answer to *qualified* or *refused* |
+| **Convincing unsupported answer** | The model invents an SLA that the contract never states | Answer finalizer: any number the evidence does not contain downgrades the answer to *qualified* with a warning; sources are appended by code, never by the model |
 | **Security failure** | An engineer asking about leave sees a confidential HR investigation; a document says "ignore your rules" | ACL pre-filter in SQL (restricted chunks never enter the candidate set) + ingest-time prompt-injection scanner that caps malicious docs at the lowest trust tier |
 | **Undetected regression** | A model or prompt change silently breaks behavior | Unit + contract test suites and a traceable pipeline run for every question |
 
@@ -58,8 +58,8 @@ flowchart LR
     G -- ok --> RR[Optional<br/>cross-encoder rerank]
     RR --> A[Authority + precedence<br/>level, tier, relations]
     A --> P[Prompt<br/>docs wrapped as untrusted data]
-    P --> L[Local LLM<br/>JSON schema output]
-    L --> V[Validator<br/>citations, allowed ids]
+    P --> L[Local LLM<br/>plain-text answer]
+    L --> V[Finalizer<br/>number check, sources appended]
     V --> OUT[answered / qualified / refused]
 ```
 
@@ -71,7 +71,7 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 - **Authority, not just relevance.** A reviewed [`data/authority.yaml`](data/authority.yaml) assigns each document a tier and org level, backed by quotes that are re-verified against the document text at every ingest. A quote that drifts fails the ingest.
 - **Prompt-injection resistant.** [`injection.scanner.ts`](apps/api/src/modules/corpus/injection.scanner.ts) flags instruction-like content at ingest; flagged docs are forced to `unverified` and can never override policy.
 - **Refuses without hallucinating.** A deterministic evidence gate refuses before any LLM call when nothing trustworthy is visible.
-- **Structured, cited answers.** The LLM returns `claims[]` with `citation_ids`; uncited claims are dropped and reported as warnings.
+- **Plain-text answers, sources from code.** The LLM writes a short text answer; the finalizer appends the exact documents it was given (id, version, section, role) and flags unsupported numbers.
 - **Supply-chain integrity.** Pack files are checked against `checksums.sha256` before ingest.
 - **Hexagonal architecture.** Ports for embeddings, reranker, LLM and vector store with real and fake adapters, so every stage is testable offline and swappable (e.g. Azure OpenAI + Azure AI Search in production).
 - **Fully offline, CPU only.** See [Offline CPU models](#offline-cpu-models). In-process ONNX embeddings via `@huggingface/transformers`, Postgres + pgvector in Docker, any OpenAI-compatible local LLM (Ollama, llama.cpp, vLLM).
@@ -84,7 +84,7 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 | Vector store | Postgres 17 + pgvector 0.8 (hybrid vector + full-text) |
 | Embeddings | `Snowflake/snowflake-arctic-embed-m-v1.5` (768d), in-process ONNX |
 | Reranker (optional) | `Xenova/bge-reranker-base` cross-encoder |
-| LLM | Any OpenAI-compatible endpoint, default `qwen3.5:4b` on Ollama |
+| LLM | Any OpenAI-compatible endpoint, default `qwen3.5:0.8b-mlx` on Ollama |
 | Config | `@nestjs/config` + zod, fail-fast validation |
 | Tests | Vitest (unit + pgvector contract tests) |
 
@@ -96,28 +96,28 @@ Every model runs on your machine, on CPU. No GPU, no API key, no cloud account. 
 |---|---|---|---|---|
 | Embeddings | [`Snowflake/snowflake-arctic-embed-m-v1.5`](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) (768d, fp32) | In-process ONNX via `@huggingface/transformers` | ~420 MB | Strong retrieval quality for its size, CLS pooling + query instruction, no extra server to run |
 | Reranker (optional) | [`Xenova/bge-reranker-base`](https://huggingface.co/Xenova/bge-reranker-base) (q8) | In-process ONNX | ~280 MB | Cross-encoder for sharper ordering when `--rerank` is on, loaded only on first use |
-| Answer LLM | [`qwen3.5:4b`](https://ollama.com/library/qwen3.5) (Q4_K_M, 4.7B params) | [Ollama](https://ollama.com), OpenAI-compatible API | ~3.4 GB | Small enough for a laptop CPU, reliable JSON output, Apache 2.0 license |
+| Answer LLM | [`qwen3.5:0.8b-mlx`](https://ollama.com/library/qwen3.5) (0.8B params) | [Ollama](https://ollama.com), OpenAI-compatible API | ~1.2 GB | MLX build, Apple Silicon only (elsewhere use `qwen3.5:0.8b`). Fastest option (about 10-20 s per answer on an M1), Apache 2.0 license. `qwen3.5:4b` gives more careful answers at about 30 s |
 
 ### Set up the models once
 
 The embedding and reranker models download automatically on first use into `.cache/models`. The LLM comes from Ollama:
 
 ```bash
-ollama pull qwen3.5:4b
+ollama pull qwen3.5:0.8b-mlx
 ```
 
 Optional: give the model an 8K context window so larger evidence sets fit. Create a file named `Modelfile` with:
 
 ```
-FROM qwen3.5:4b
+FROM qwen3.5:0.8b-mlx
 PARAMETER num_ctx 8192
 ```
 
 ```bash
-ollama create qwen3.5-4b-8k -f Modelfile
+ollama create qwen3.5-0.8b-8k -f Modelfile
 ```
 
-Then set `LLM_MODEL_ID=qwen3.5-4b-8k` in `.env`.
+Then set `LLM_MODEL_ID=qwen3.5-0.8b-8k` in `.env`.
 
 ### Go fully offline
 
@@ -168,7 +168,7 @@ cp .env.example .env
 ```
 
 ```bash
-ollama pull qwen3.5:4b
+ollama pull qwen3.5:0.8b-mlx
 ```
 
 ```bash
@@ -195,7 +195,7 @@ pnpm --filter api ask --user u-proc-310 "What is our process for approving a new
 pnpm trace "who approves a regulated vendor"
 ```
 
-`trace` prints every pipeline step: embed, search, gate, rerank, authority, prompt, LLM, parse, validate.
+`trace` prints every pipeline step: embed, search, gate, rerank, authority, prompt, LLM, finalize.
 
 ### Tests
 
@@ -215,7 +215,7 @@ apps/api/src
   adapters/         transformers, openai-compat, pgvector, and fakes for tests
   domain/           precedence + tier rules (pure functions)
   modules/corpus/   pack loader, checksum verifier, ACL resolver, chunker, injection scanner, authority
-  modules/answer/   embed -> search -> rerank -> generate stages, prompt builder, validator
+  modules/answer/   embed -> search -> rerank -> generate stages, prompt builder, finalizer
   modules/http/     playground page + JSON API (localhost only)
   cli/              migrate, ingest, search, ask, trace
 data/authority.yaml reviewed authority layer with evidence quotes
