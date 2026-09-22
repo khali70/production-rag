@@ -6,6 +6,7 @@ import type {
   ScoredChunk,
   SearchQuery,
   Status,
+  VersionQuery,
 } from "../domain/types.js";
 
 /** Thrown when the index was built by a different embedding setup than the live one. */
@@ -35,6 +36,13 @@ export abstract class VectorStorePort {
    * into process memory.
    */
   abstract search(scope: AccessScope, q: SearchQuery): Promise<ScoredChunk[]>;
+
+  /**
+   * The best chunks of the other versions of documents a search returned, so
+   * the prompt can show old and current text side by side. Same permission,
+   * status and effective-date filters as search.
+   */
+  abstract versions(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]>;
 
   /** Upserts one document and its chunks in a single transaction. */
   abstract upsert(chunks: ChunkRecord[]): Promise<void>;

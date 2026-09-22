@@ -19,6 +19,11 @@ export type EvidenceDoc = {
   /** Prompt-local citation id: C1, C2, ... */
   id: string;
   role: EvidenceRole;
+  /**
+   * 1 wins. Follows the prompt order: role, then precedence. Primaries of
+   * equal authority share priority 1, so the model sees a tie, not a winner.
+   */
+  priority: number;
   /** Why the role was assigned, shown to the model and in diagnostics. */
   note?: string;
   /** For modifier / historical / secondary: the id of the document it relates to. */
@@ -50,7 +55,7 @@ const ROLE_ORDER: Record<EvidenceRole, number> = {
 
 const docKey = (documentId: string, version: string) => `${documentId}@${version}`;
 
-type Draft = Omit<EvidenceDoc, "id" | "relatedTo"> & { relatedKey?: string; key: string };
+type Draft = Omit<EvidenceDoc, "id" | "relatedTo" | "priority"> & { relatedKey?: string; key: string };
 
 export function resolveEvidence(chunks: ScoredChunk[]): EvidenceDoc[] {
   // 1. Group by document version. The best-scoring chunk is kept first for ranking.
@@ -160,15 +165,21 @@ export function resolveEvidence(chunks: ScoredChunk[]): EvidenceDoc[] {
     }
   }
 
-  // 5. Stable order for the prompt: role, then precedence. Ids follow that order.
+  // 5. Stable order for the prompt: role, then precedence. Ids and priorities follow that order.
   const ordered = [...drafts.values()].sort(
     (a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || comparePrecedence(a.chunks[0]!, b.chunks[0]!),
   );
   const idByKey = new Map(ordered.map((d, i) => [d.key, `C${i + 1}`]));
 
-  return ordered.map(({ key, relatedKey, ...d }) => ({
-    ...d,
-    id: idByKey.get(key)!,
-    relatedTo: relatedKey ? idByKey.get(relatedKey) : undefined,
-  }));
+  let priority = 0;
+  return ordered.map(({ key, relatedKey, ...d }, i) => {
+    const tiedWithPrevious = i > 0 && d.role === "primary" && d.equalAuthority;
+    if (!tiedWithPrevious) priority++;
+    return {
+      ...d,
+      id: idByKey.get(key)!,
+      priority,
+      relatedTo: relatedKey ? idByKey.get(relatedKey) : undefined,
+    };
+  });
 }

@@ -27,7 +27,7 @@ async function main(): Promise<void> {
       user: { type: "string" },
       k: { type: "string", default: "5" },
       order: { type: "string", default: "relevance" },
-      statuses: { type: "string", default: "current" },
+      statuses: { type: "string", default: "current,superseded,retired" },
       "min-rank": { type: "string", default: "0" },
       "min-cosine": { type: "string" },
       "as-of": { type: "string" },

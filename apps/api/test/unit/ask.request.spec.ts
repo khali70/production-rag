@@ -8,13 +8,14 @@ describe("AskRequestSchema", () => {
     expect(req.question).toBe("who approves vendors?");
     expect(toAskOptions(req)).toEqual({
       topK: 3,
-      includeStatuses: ["current"],
+      includeStatuses: ["current", "superseded", "retired"],
       minCosine: undefined,
       asOf: undefined,
       orderBy: "precedence",
       gateCosine: 0.3,
       relativeCosineMargin: 0.15,
       maxContextChars: 12_000,
+      versionChunks: 2,
       rerank: undefined,
     });
   });

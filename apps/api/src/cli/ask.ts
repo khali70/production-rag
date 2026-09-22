@@ -10,7 +10,7 @@ import { PackLoader } from "../modules/corpus/pack.loader.js";
 import { AnswerService, type AskOptions } from "../modules/answer/answer.service.js";
 import { EmbeddingPort } from "../ports/embedding.port.js";
 import { LlmPort } from "../ports/llm.port.js";
-import { formatAnswer, formatTrace } from "./ask.trace.js";
+import { formatAnswer, formatTrace } from "../modules/answer/ask.trace.js";
 
 /**
  * Ask a question end to end as a given user: embed, retrieve, gate, resolve
@@ -31,7 +31,8 @@ async function main(): Promise<void> {
       user: { type: "string" },
       k: { type: "string", default: "3" },
       order: { type: "string", default: "precedence" },
-      statuses: { type: "string", default: "current" },
+      statuses: { type: "string", default: "current,superseded,retired" },
+      "version-chunks": { type: "string", default: "2" },
       "min-cosine": { type: "string" },
       "gate-cosine": { type: "string", default: "0.3" },
       "cosine-margin": { type: "string", default: "0.15" },
@@ -49,7 +50,7 @@ async function main(): Promise<void> {
   const question = positionals.join(" ").trim();
   if (!values.user || question.length === 0) {
     throw new Error(
-      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current] [--min-cosine N] [--gate-cosine 0.3] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
+      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current,superseded,retired] [--version-chunks 2] [--min-cosine N] [--gate-cosine 0.3] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
     );
   }
 
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
     gateCosine: num("gate-cosine", values["gate-cosine"], (n) => n >= -1 && n <= 1),
     relativeCosineMargin: num("cosine-margin", values["cosine-margin"], (n) => n >= 0 && n <= 2),
     maxContextChars: num("max-context-chars", values["max-context-chars"], (n) => Number.isInteger(n) && n > 0),
+    versionChunks: num("version-chunks", values["version-chunks"], (n) => Number.isInteger(n) && n >= 0),
     rerank: values.rerank
       ? {
         pool: num("rerank-pool", values["rerank-pool"], (n) => Number.isInteger(n) && n > 0),
@@ -136,10 +138,13 @@ async function main(): Promise<void> {
           case "reranked":
             live(`kept ${d.rerank!.kept.length} (${d.rerank!.modelId}, ${d.rerank!.ms} ms)\n`);
             break;
+          case "versions":
+            if (options.versionChunks > 0) live(`[4b] other versions: ${d.versions.chunks.length} chunk(s) (${d.versions.ms} ms)\n`);
+            break;
           case "resolved":
             live(`[4] off-topic filter${options.rerank ? ` (rerank < ${options.rerank.minScore})` : ""}: dropped ${d.offTopic.length} chunk(s)\n[5] authority:\n`);
             for (const e of d.evidence) {
-              live(`      ${e.id} ${e.role.padEnd(10)} ${e.documentId} v${e.version} "${e.title}"${e.note ? `  (${e.note})` : ""}\n`);
+              live(`      ${e.priority}. ${e.id} ${e.role.padEnd(10)} ${e.documentId} v${e.version} "${e.title}"${e.note ? `  (${e.note})` : ""}\n`);
             }
             break;
           case "prompted":

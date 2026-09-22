@@ -7,21 +7,27 @@ import {
   Header,
   HttpCode,
   Inject,
+  Logger,
   NotFoundException,
   Post,
 } from "@nestjs/common";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { relative, resolve } from "node:path";
 import { z } from "zod";
+import { AppConfig, REPO_ROOT } from "../../config/app-config.js";
 import type { AccessScope, ScoredChunk } from "../../domain/types.js";
 import { EmbeddingPort } from "../../ports/embedding.port.js";
 import { LlmPort } from "../../ports/llm.port.js";
 import { AnswerService } from "../answer/answer.service.js";
+import { formatTrace } from "../answer/ask.trace.js";
 import { PackLoader } from "../corpus/pack.loader.js";
 import { AskRequestSchema, toAskOptions } from "./ask.request.js";
 
 /** public/ sits next to dist/ and src/, three levels up from this file. */
 const PAGE = resolve(import.meta.dirname, "../../../public/ask.html");
+
+/** Same folder as the CLI traces. Gitignored: traces hold document text and prompts. */
+const TRACE_DIR = resolve(REPO_ROOT, "traces");
 
 /**
  * Chunk for the diagnostics panel. Includes the text: every chunk here already
@@ -53,7 +59,10 @@ const round = (v: number) => Math.round(v * 1e5) / 1e5;
  */
 @Controller()
 export class AskController {
+  private readonly logger = new Logger(AskController.name);
+
   constructor(
+    @Inject(AppConfig) private readonly config: AppConfig,
     @Inject(AnswerService) private readonly answers: AnswerService,
     @Inject(PackLoader) private readonly pack: PackLoader,
     @Inject(EmbeddingPort) private readonly embeddings: EmbeddingPort,
@@ -104,6 +113,7 @@ export class AskController {
     if (!user) throw new NotFoundException(`Unknown user ${req.userId}`);
     const scope: AccessScope = { principalId: user.user_id, groups: user.groups, department: user.department };
 
+    const startedAt = new Date();
     // Collect reasoning tokens per attempt, the same way the CLI trace does.
     const reasoning: string[] = [];
     let result;
@@ -120,9 +130,37 @@ export class AskController {
       throw new BadGatewayException(err instanceof Error ? err.message : String(err));
     }
 
+    // One trace file per request, in the CLI format. A failed write must not fail the answer.
+    const stamp = startedAt.toISOString().replace(/[:.]/g, "-");
+    const tracePath = resolve(TRACE_DIR, `web-${stamp}-${user.user_id}.txt`);
+    let traceFile: string | null = relative(REPO_ROOT, tracePath);
+    try {
+      await mkdir(TRACE_DIR, { recursive: true });
+      await writeFile(
+        tracePath,
+        formatTrace(
+          {
+            startedAt,
+            user: { id: user.user_id, groups: user.groups },
+            question: req.question,
+            options,
+            embedding: { modelId: this.embeddings.modelId, prefixScheme: this.embeddings.prefixScheme },
+            llm: { modelId: this.llm.info.id, baseUrl: this.config.llm.baseUrl },
+            reasoning,
+          },
+          result,
+        ),
+        "utf8",
+      );
+    } catch (err) {
+      this.logger.warn(`could not write trace ${tracePath}: ${err instanceof Error ? err.message : String(err)}`);
+      traceFile = null;
+    }
+
     const d = result.debug;
     return {
       answer: result.answer,
+      traceFile,
       diagnostics: {
         user: { userId: user.user_id, groups: user.groups },
         embedding: {
@@ -144,9 +182,11 @@ export class AskController {
         gate: d.gate ?? null,
         retrieved: d.retrieved.map(chunkView),
         offTopic: d.offTopic.map((c) => c.chunkId),
+        versions: { ms: d.versions.ms, chunks: d.versions.chunks.map(chunkView) },
         rerank: d.rerank ? { modelId: d.rerank.modelId, ms: d.rerank.ms, scores: d.rerank.scores } : null,
         evidence: d.evidence.map((e) => ({
           id: e.id,
+          priority: e.priority,
           role: e.role,
           documentId: e.documentId,
           version: e.version,

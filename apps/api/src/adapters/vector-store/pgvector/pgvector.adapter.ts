@@ -11,6 +11,7 @@ import type {
   SearchQuery,
   Status,
   Tier,
+  VersionQuery,
 } from "../../../domain/types.js";
 import { EmbeddingPort } from "../../../ports/embedding.port.js";
 import {
@@ -19,7 +20,7 @@ import {
   VectorStorePort,
 } from "../../../ports/vector-store.port.js";
 import { PgPool } from "./pg.pool.js";
-import { buildSearchSql } from "./search.sql.js";
+import { VERSIONS_SQL, buildSearchSql } from "./search.sql.js";
 
 type ChunkRow = {
   chunk_id: string;
@@ -114,6 +115,28 @@ export class PgVectorStoreAdapter extends VectorStorePort {
         q.minCosine ?? null,
       ]);
 
+      return rows.map((row) => this.toScoredChunk(row));
+    });
+  }
+
+  async versions(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]> {
+    if (!scope || !Array.isArray(scope.groups) || scope.groups.length === 0) {
+      throw new MissingScopeError();
+    }
+    if (q.documentIds.length === 0 || q.perVersion < 1) return [];
+
+    return this.db.transaction(async (client) => {
+      await this.assertIndexMatches(client);
+      const { rows } = await client.query<ChunkRow>(VERSIONS_SQL, [
+        pgvector.toSql(q.embedding),
+        q.documentIds,
+        scope.groups,
+        q.includeStatuses ?? ["current"],
+        0,
+        q.skipVersions,
+        q.perVersion,
+        resolveAsOf(q.asOf),
+      ]);
       return rows.map((row) => this.toScoredChunk(row));
     });
   }

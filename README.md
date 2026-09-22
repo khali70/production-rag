@@ -56,10 +56,11 @@ flowchart LR
     S --> G{Evidence gate<br/>no LLM}
     G -- too weak --> R[Refuse safely]
     G -- ok --> RR[Optional<br/>cross-encoder rerank]
-    RR --> A[Authority + precedence<br/>level, tier, relations]
-    A --> P[Prompt<br/>docs wrapped as untrusted data]
+    RR --> VX[Other versions<br/>of each file found, same ACL]
+    VX --> A[Authority + precedence<br/>level, tier, relations, priority]
+    A --> P[Prompt<br/>per file: current + old versions,<br/>priority list, untrusted data]
     P --> L[Local LLM<br/>plain-text answer]
-    L --> V[Finalizer<br/>number check, sources appended]
+    L --> V[Finalizer<br/>number checks, sources appended]
     V --> OUT[answered / qualified / refused]
 ```
 
@@ -69,6 +70,7 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 
 - **Permission-consistent by construction.** Identity is resolved server-side from the pack's `identities.json`; `allowed_groups`, classification rules and `deny_groups` are enforced inside the SQL query, default deny.
 - **Authority, not just relevance.** A reviewed [`data/authority.yaml`](data/authority.yaml) assigns each document a tier and org level, backed by quotes that are re-verified against the document text at every ingest. A quote that drifts fails the ingest.
+- **Old and current side by side.** Search covers every status the user may see. For each file found, the best chunks of its other versions are added, and the prompt groups them per file: the current version first, then the old ones marked `state="old"`. Every version carries a priority (1 wins) decided in code, repeated as a list right before the question, so the model can say "previously X, replaced by v3.0" without ever answering from a retired rule. A number that only an old version contains, stated as current, downgrades the answer.
 - **Prompt-injection resistant.** [`injection.scanner.ts`](apps/api/src/modules/corpus/injection.scanner.ts) flags instruction-like content at ingest; flagged docs are forced to `unverified` and can never override policy.
 - **Refuses without hallucinating.** A deterministic evidence gate refuses before any LLM call when nothing trustworthy is visible.
 - **Plain-text answers, sources from code.** The LLM writes a short text answer; the finalizer appends the exact documents it was given (id, version, section, role) and flags unsupported numbers.
@@ -195,7 +197,7 @@ pnpm --filter api ask --user u-proc-310 "What is our process for approving a new
 pnpm trace "who approves a regulated vendor"
 ```
 
-`trace` prints every pipeline step: embed, search, gate, rerank, authority, prompt, LLM, finalize.
+`trace` prints every pipeline step: embed, search, gate, rerank, authority, prompt, LLM, finalize. Every question asked in the playground also saves the same trace to `traces/web-<time>-<user>.txt` (gitignored: it holds document text and prompts).
 
 ### Tests
 

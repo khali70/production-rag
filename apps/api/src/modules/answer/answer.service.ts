@@ -25,6 +25,12 @@ export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
   relativeCosineMargin: number;
   maxContextChars: number;
   /**
+   * For every document the search found, also fetch this many chunks from each
+   * of its other versions the user can see, so the model gets old and current
+   * text of the same file side by side. 0 turns it off.
+   */
+  versionChunks: number;
+  /**
    * When set, search fetches `pool` chunks by relevance, the reranker keeps
    * the best `topK`, and chunks scoring below `minScore` are dropped as
    * off-topic. Precedence is still applied afterwards by the evidence resolver.
@@ -45,6 +51,8 @@ export type AskResult = {
     rerank?: { modelId: string; ms: number; scores: Record<string, number>; kept: ScoredChunk[] };
     /** Chunks removed by the relative cosine margin, or by the rerank floor when reranking. */
     offTopic: ScoredChunk[];
+    /** Chunks of other versions of the found documents, added after the off-topic filter. */
+    versions: { chunks: ScoredChunk[]; ms: number };
     evidence: EvidenceDoc[];
     prompt?: { system: string; user: string };
     raw: string[];
@@ -53,7 +61,7 @@ export type AskResult = {
   };
 };
 
-export type AskStage = "embedded" | "retrieved" | "reranked" | "resolved" | "prompted" | "generating";
+export type AskStage = "embedded" | "retrieved" | "reranked" | "versions" | "resolved" | "prompted" | "generating";
 
 export type AskHooks = {
   /** Fires as each stage completes, so a caller can print a live trace. */
@@ -75,7 +83,7 @@ const NOT_FOUND = "I could not find trustworthy information you have access to t
  * Orchestrates the answer pipeline. Each model-backed step is a stage behind
  * its own port, so swapping the embedder, reranker or LLM is a config change:
  *
- *   embed -> search -> gate -> [rerank] -> off-topic filter -> resolve authority
+ *   embed -> search -> gate -> [rerank] -> off-topic filter -> other versions -> resolve authority
  *         -> prompt -> generate -> finalize (sources + number check)
  *
  * The gate, filter, resolver and finalizer are plain code: no model decides
@@ -91,7 +99,7 @@ export class AnswerService {
   ) {}
 
   async ask(scope: AccessScope, question: string, opts: AskOptions, hooks: AskHooks = {}): Promise<AskResult> {
-    const { gateCosine, relativeCosineMargin, maxContextChars, rerank, ...searchOpts } = opts;
+    const { gateCosine, relativeCosineMargin, maxContextChars, versionChunks, rerank, ...searchOpts } = opts;
     if (rerank && rerank.pool < searchOpts.topK) {
       throw new Error(`rerank.pool (${rerank.pool}) must be >= topK (${searchOpts.topK})`);
     }
@@ -111,6 +119,7 @@ export class AnswerService {
       searchMs: 0,
       bestCosine: -1,
       offTopic: [],
+      versions: { chunks: [], ms: 0 },
       evidence: [],
       raw: [],
       generations: [],
@@ -166,12 +175,27 @@ export class AnswerService {
       debug.offTopic = searched.chunks.filter((c) => !isOnTopic(c));
     }
 
-    // 5. Versioning + authority, in code.
-    const evidence = resolveEvidence(onTopic);
+    // 5. Other versions of every document found, so old and current text of
+    //    the same file reach the model together. Not off-topic filtered: an
+    //    old version is context for the current one, whatever its cosine.
+    if (versionChunks > 0) {
+      debug.versions = await this.search.versions(scope, {
+        embedding: embedded.vector,
+        documentIds: [...new Set(onTopic.map((c) => c.source.documentId))],
+        skipVersions: [...new Set(onTopic.map((c) => `${c.source.documentId}@${c.source.version}`))],
+        perVersion: versionChunks,
+        includeStatuses: searchOpts.includeStatuses,
+        asOf,
+      });
+    }
+    hooks.onStage?.("versions", debug);
+
+    // 6. Versioning + authority, in code.
+    const evidence = resolveEvidence([...onTopic, ...debug.versions.chunks]);
     debug.evidence = evidence;
     hooks.onStage?.("resolved", debug);
 
-    // 6. Prompt and generate.
+    // 7. Prompt and generate.
     const user = buildUserPrompt(evidence, { question, asOf, maxContextChars });
     debug.prompt = { system: SYSTEM_PROMPT, user };
     hooks.onStage?.("prompted", debug);
@@ -184,7 +208,7 @@ export class AnswerService {
     debug.raw = generated.raw;
     debug.generations = generated.generations;
 
-    // 7. Append the sources and check numbers against the evidence the model was given.
+    // 8. Append the sources and check numbers against the evidence the model was given.
     return done(finalizeAnswer(generated.text, evidence, { question, asOf }));
   }
 }

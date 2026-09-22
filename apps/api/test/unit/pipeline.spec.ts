@@ -3,7 +3,7 @@ import { FakeEmbeddingAdapter } from "../../src/adapters/embedding/fake-embeddin
 import { FakeLlm } from "../../src/adapters/llm/fake-llm.adapter.js";
 import { FakeReranker } from "../../src/adapters/reranker/fake-reranker.adapter.js";
 import { rankOf } from "../../src/domain/tier.js";
-import type { AccessScope, ScoredChunk, SearchQuery } from "../../src/domain/types.js";
+import type { AccessScope, ScoredChunk, SearchQuery, VersionQuery } from "../../src/domain/types.js";
 import { AnswerService, type AskOptions } from "../../src/modules/answer/answer.service.js";
 import { EmbedStage } from "../../src/modules/answer/stages/embed.stage.js";
 import { GenerateStage } from "../../src/modules/answer/stages/generate.stage.js";
@@ -47,12 +47,16 @@ const opts = (over: Partial<AskOptions> = {}): AskOptions => ({
   gateCosine: 0.5,
   relativeCosineMargin: 0.15,
   maxContextChars: 12000,
+  versionChunks: 0,
   ...over,
 });
 
 function build(chunks: ScoredChunk[]) {
   const queries: SearchQuery[] = [];
-  const store = { search: async (_: AccessScope, q: SearchQuery) => (queries.push(q), chunks.slice(0, q.topK)) };
+  const store = {
+    search: async (_: AccessScope, q: SearchQuery) => (queries.push(q), chunks.slice(0, q.topK)),
+    versions: async () => [],
+  };
   const llm = new FakeLlm();
   const service = new AnswerService(
     new EmbedStage(new FakeEmbeddingAdapter()),
@@ -124,5 +128,44 @@ describe("plain-text answers", () => {
     expect(answer.message).toBe(
       "Procurement signs off on vendor approval.\n\nSources:\n[C1] VENDOR (VENDOR v1.0, Document) - primary",
     );
+  });
+});
+
+describe("other versions of the files found", () => {
+  it("fetches the other versions of every document found and sends them marked old", async () => {
+    const current = { ...chunk("POL", "Procurement approves vendors.", 0.7), effectiveFrom: "2026-07-01" };
+    const retired: ScoredChunk = {
+      ...chunk("POL", "The CFO approved vendors.", 0.2),
+      chunkId: "POL@0.9#0",
+      status: "retired",
+      source: { ...current.source, version: "0.9" },
+    };
+    const versionQueries: VersionQuery[] = [];
+    const store = {
+      search: async () => [current],
+      versions: async (_: AccessScope, q: VersionQuery) => (versionQueries.push(q), [retired]),
+    };
+    const llm = new FakeLlm(() => "Procurement approves vendors.");
+    const service = new AnswerService(
+      new EmbedStage(new FakeEmbeddingAdapter()),
+      new SearchStage(store as unknown as VectorStorePort),
+      new RerankStage(new FakeReranker()),
+      new GenerateStage(llm),
+    );
+
+    const { debug } = await service.ask(scope, "who approves vendors", opts({ versionChunks: 2 }));
+
+    expect(versionQueries[0]).toMatchObject({ documentIds: ["POL"], skipVersions: ["POL@1.0"], perVersion: 2 });
+    expect(debug.evidence.map((d) => [d.version, d.role, d.priority])).toEqual([["1.0", "primary", 1], ["0.9", "historical", 2]]);
+    const prompt = llm.calls[0]!.messages[0]!.content;
+    expect(prompt).toContain('v="0.9" state="old"');
+    expect(prompt).toContain("The CFO approved vendors.");
+  });
+
+  it("skips the lookup when versionChunks is 0", async () => {
+    const { service, queries } = build(pool);
+    const { debug } = await service.ask(scope, "vendor approval", opts());
+    expect(queries).toHaveLength(1);
+    expect(debug.versions.chunks).toEqual([]);
   });
 });

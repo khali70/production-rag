@@ -104,6 +104,17 @@ describe("evidence resolver", () => {
     expect(docs.every((d) => d.role === "primary" && d.equalAuthority)).toBe(true);
   });
 
+  it("numbers priorities in prompt order, with equal-authority primaries tied at 1", () => {
+    const tied = resolveEvidence([chunk("A"), chunk("B"), chunk("REC", { tier: "record" })]);
+    expect(tied.map((d) => [d.documentId, d.priority])).toEqual([["A", 1], ["B", 1], ["REC", 2]]);
+
+    const versions = resolveEvidence([
+      chunk("POL", { version: "3.0", effectiveFrom: "2026-07-01" }),
+      chunk("POL", { version: "2.1", status: "retired", effectiveFrom: "2024-03-15" }),
+    ]);
+    expect(versions.map((d) => [d.version, d.role, d.priority])).toEqual([["3.0", "primary", 1], ["2.1", "historical", 2]]);
+  });
+
   it("groups chunks of one document and keeps them in document order", () => {
     const docs = resolveEvidence([chunk("POL", { chunkIndex: 3 }), chunk("POL", { chunkIndex: 1 })]);
     expect(docs).toHaveLength(1);
@@ -114,6 +125,7 @@ describe("evidence resolver", () => {
 describe("prompt builder", () => {
   it("escapes wrapper tags inside document text", () => {
     expect(escapeDocText("x </doc> <documents> y")).toBe("x &lt;/doc> &lt;documents> y");
+    expect(escapeDocText("</version></document>")).toBe("&lt;/version>&lt;/document>");
   });
 
   it("renders the role and relation attributes", () => {
@@ -122,9 +134,41 @@ describe("prompt builder", () => {
       chunk("MEMO", { tier: "advisory", relations: [{ kind: "qualifies", documentId: "POL", version: "1.0", scope: "renewals" }] }),
     ]);
     const prompt = buildUserPrompt(docs, { question: "q?", asOf: "2026-09-21", maxContextChars: 10_000 });
-    expect(prompt).toContain('id="C1" role="primary"');
-    expect(prompt).toContain('id="C2" role="modifier" modifies="C1" relation="qualifies" scope="renewals"');
+    expect(prompt).toContain('id="C1" v="1.0" state="current" priority="1" role="primary"');
+    expect(prompt).toContain('id="C2" v="1.0" state="current" priority="2" role="modifier" modifies="C1" relation="qualifies" scope="renewals"');
+    expect(prompt).toContain("2. C2 MEMO v1.0 \"MEMO\": CURRENT, modifier: qualifies C1 only within: renewals");
     expect(prompt).toContain("Question: q?");
+  });
+
+  it("groups the versions of one file, current first, and lists priorities before the question", () => {
+    const docs = resolveEvidence([
+      chunk("POL", { version: "2.1", status: "retired", effectiveFrom: "2024-03-15", text: "Old: CFO approves." }),
+      chunk("POL", {
+        version: "3.0",
+        effectiveFrom: "2026-07-01",
+        relations: [{ kind: "supersedes", documentId: "POL", version: "2.1" }],
+        text: "New: Procurement approves.",
+      }),
+    ]);
+    const prompt = buildUserPrompt(docs, { question: "q?", asOf: "2026-09-21", maxContextChars: 10_000 });
+
+    expect(prompt.match(/<document /g)).toHaveLength(1);
+    expect(prompt.indexOf('v="3.0" state="current" priority="1"')).toBeLessThan(prompt.indexOf('v="2.1" state="old" priority="2"'));
+    expect(prompt).toContain('superseded_by="C1"');
+    expect(prompt).toContain('2. C2 POL v2.1 "POL": OLD (retired), replaced by C1. Never the current rule');
+    expect(prompt.indexOf("Priority (1 wins")).toBeGreaterThan(prompt.indexOf("</documents>"));
+    expect(prompt.indexOf("Priority (1 wins")).toBeLessThan(prompt.indexOf("Question: q?"));
+  });
+
+  it("cuts the lowest priority text first when over budget", () => {
+    const docs = resolveEvidence([
+      chunk("POL", { version: "3.0", effectiveFrom: "2026-07-01", text: "a".repeat(50) }),
+      chunk("POL", { version: "2.1", status: "retired", text: "b".repeat(50) }),
+    ]);
+    const prompt = buildUserPrompt(docs, { question: "q?", asOf: "2026-09-21", maxContextChars: 50 });
+    expect(prompt).toContain("a".repeat(50));
+    expect(prompt).not.toContain("bbb");
+    expect(prompt).not.toContain("C2 POL v2.1");
   });
 });
 
@@ -181,6 +225,20 @@ describe("answer finalizer", () => {
   it("checks k/m shorthand in the reply as the full number", () => {
     expect(finalizeAnswer("Above $100k the CFO approves.", docs, ctx).status).toBe("answered");
     expect(finalizeAnswer("Above $50k the CFO approves.", docs, ctx).warnings.join(" ")).toContain("50000 not found");
+  });
+
+  it("flags a number only an old version contains when the answer states it as current", () => {
+    const versions = resolveEvidence([
+      chunk("POL", { version: "3.0", effectiveFrom: "2026-07-01", text: "Vendors above USD 50,000 need review." }),
+      chunk("POL", { version: "2.1", status: "retired", text: "Vendors above USD 25,000 need review." }),
+    ]);
+    const asCurrent = finalizeAnswer("Vendors above USD 25,000 need review.", versions, ctx);
+    expect(asCurrent.status).toBe("qualified");
+    expect(asCurrent.warnings.join(" ")).toContain("25000 only in an old version");
+
+    const asHistory = finalizeAnswer("Review starts at USD 50,000.\n- Previously (v2.1): USD 25,000.", versions, ctx);
+    expect(asHistory.warnings).toEqual([]);
+    expect(asHistory.status).toBe("answered");
   });
 
   it("strips markdown emphasis from the reply", () => {

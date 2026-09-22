@@ -128,7 +128,7 @@ export type SearchQuery = {
   text: string;
   embedding: number[];
   topK: number;
-  /** Defaults to ["current"]. */
+  /** Store default is ["current"]; the ask pipeline passes every status. */
   includeStatuses?: Status[];
   /** e.g. 90 for "what is our process" questions. Defaults to 0. */
   minAuthorityRank?: number;
@@ -149,6 +149,18 @@ export type SearchQuery = {
    * precedence: rank by authority first, for conflict resolution.
    */
   orderBy?: "relevance" | "precedence";
+};
+
+/** Other versions of documents a search already returned. */
+export type VersionQuery = {
+  embedding: number[];
+  documentIds: string[];
+  /** "documentId@version" already in the evidence; never fetched again. */
+  skipVersions: string[];
+  /** Best chunks to fetch per other version, by vector distance to the question. */
+  perVersion: number;
+  includeStatuses?: Status[];
+  asOf?: string;
 };
 
 export type IndexInfo = {

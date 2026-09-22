@@ -112,6 +112,7 @@
   th { color: var(--muted); font-weight: 500; }
   td.num { font-family: var(--mono); text-align: right; }
   tr.dropped td { opacity: .45; text-decoration: line-through; }
+  tr.added td:first-child { color: var(--accent); }
   .error { color: var(--bad); white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
   details summary { cursor: pointer; color: var(--muted); }
   pre { font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 400px; background: var(--bg); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
@@ -183,10 +184,16 @@
       <div class="lbl">Statuses</div>
       <div class="row">
         <label class="check"><input type="checkbox" name="status" value="current" checked> current</label>
-        <label class="check"><input type="checkbox" name="status" value="superseded"> superseded</label>
-        <label class="check"><input type="checkbox" name="status" value="retired"> retired</label>
+        <label class="check"><input type="checkbox" name="status" value="superseded" checked> superseded</label>
+        <label class="check"><input type="checkbox" name="status" value="retired" checked> retired</label>
       </div>
+      <div class="hint">Old versions are sent marked as old, so the model can say what changed.</div>
     </div>
+    <label class="field">
+      <div class="lbl">Other versions per file <output id="versionChunksOut"></output></div>
+      <input type="range" id="versionChunks" min="0" max="5" step="1" value="2">
+      <div class="hint">For each file found, also send this many chunks of each of its other versions. 0 = off.</div>
+    </label>
 
     <h2>Rerank</h2>
     <label class="field check"><input type="checkbox" id="rerankOn"> Cross-encoder rerank</label>
@@ -227,11 +234,11 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (n, d = 3) => (n === null || n === undefined ? "n/a" : Number(n).toFixed(d));
-const STORE = "ask-playground-v1";
+const STORE = "ask-playground-v2";
 let users = [];
 
 // ---- sliders ----
-const sliders = ["k", "gateCosine", "cosineMargin", "minCosine", "rerankPool", "rerankMin"];
+const sliders = ["k", "gateCosine", "cosineMargin", "minCosine", "versionChunks", "rerankPool", "rerankMin"];
 function syncOutputs() {
   for (const id of sliders) {
     const el = $(id);
@@ -310,6 +317,7 @@ function body() {
     cosineMargin: +$("cosineMargin").value,
     asOf: $("asOf").value || null,
     maxContextChars: +$("maxContextChars").value,
+    versionChunks: +$("versionChunks").value,
     rerank: $("rerankOn").checked ? { pool: +$("rerankPool").value, minScore: +$("rerankMin").value } : null,
   };
 }
@@ -349,13 +357,14 @@ function sourceList(list) {
   ).join("")}</ol>`;
 }
 
-function render({ answer: a, diagnostics: d }, wallMs) {
+function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
   const gate = +$("gateCosine").value;
   const best = d.bestCosine;
   const tokens = d.generations.reduce((s, g) => ({ i: s.i + g.usage.inputTokens, o: s.o + g.usage.outputTokens }), { i: 0, o: 0 });
   const llmMs = d.generations.reduce((s, g) => s + g.latencyMs, 0);
   const dropped = new Set(d.offTopic);
   const rr = d.rerank?.scores ?? {};
+  const rows = [...d.retrieved, ...d.versions.chunks];
 
   $("out").innerHTML = `
     <div class="panel">
@@ -380,6 +389,7 @@ function render({ answer: a, diagnostics: d }, wallMs) {
         <div class="fill" style="width:${Math.max(0, Math.min(1, best ?? 0)) * 100}%"></div>
         <div class="mark" style="left:${gate * 100}%" title="gate ${gate}"></div>
       </div>
+      <div class="hint">${traceFile ? `trace saved to <code>${esc(traceFile)}</code>` : "trace not saved (see server log)"}</div>
       <div class="hint">best ${fmt(best)} | gate ${gate.toFixed(2)}${d.gate ? ` | <span class="refused">refused: ${esc(d.gate)}</span>` : ""}</div>
       ${d.retrieved.length === 0 && $("minCosineOn").checked ? `<div class="note">Min cosine is on (${(+$("minCosine").value).toFixed(2)}). The SQL floor drops every chunk below it, so nothing reached the gate. Lower it or turn it off.</div>` : ""}
     </div>
@@ -390,19 +400,19 @@ function render({ answer: a, diagnostics: d }, wallMs) {
     <div class="panel">
       <h2>Evidence sent to the LLM</h2>
       <div class="tablewrap"><table>
-        <tr><th>id</th><th>role</th><th>document</th><th>title</th><th>note</th></tr>
-        ${d.evidence.map((e) => `<tr><td>${esc(e.id)}</td><td>${esc(e.role)}</td><td>${esc(e.documentId)} v${esc(e.version)}</td><td>${esc(e.title)}</td><td>${esc(e.note ?? "")}</td></tr>`).join("")}
+        <tr><th>priority</th><th>id</th><th>state</th><th>role</th><th>document</th><th>title</th><th>note</th></tr>
+        ${d.evidence.map((e) => `<tr><td class="num">${e.priority}</td><td>${esc(e.id)}</td><td>${e.role === "historical" ? "old" : "current"}</td><td>${esc(e.role)}</td><td>${esc(e.documentId)} v${esc(e.version)}</td><td>${esc(e.title)}</td><td>${esc(e.note ?? "")}</td></tr>`).join("")}
       </table></div>
     </div>` : ""}
 
     <div class="panel">
-      <h2>Retrieved chunks (${d.retrieved.length})</h2>
-      <div class="hint" style="margin-bottom:6px">Click a row to see the chunk text. Struck-through rows were dropped as off-topic.</div>
+      <h2>Retrieved chunks (${d.retrieved.length}${d.versions.chunks.length ? ` + ${d.versions.chunks.length} from other versions` : ""})</h2>
+      <div class="hint" style="margin-bottom:6px">Click a row to see the chunk text. Struck-through rows were dropped as off-topic. Rows marked + are other versions of the files found.</div>
       <div class="tablewrap"><table>
         <tr><th>#</th><th>chunk</th><th>title</th><th>section</th><th>cosine</th><th>rrf</th>${d.rerank ? "<th>rerank</th>" : ""}<th>tier</th><th>lvl</th><th>status</th></tr>
-        ${d.retrieved.map((c, i) => `
-          <tr class="chunk ${dropped.has(c.chunkId) ? "dropped" : ""}" data-i="${i}">
-            <td>${i + 1}</td><td>${esc(c.chunkId)}</td><td>${esc(c.title)}</td><td>${esc(c.section)}</td>
+        ${rows.map((c, i) => `
+          <tr class="chunk ${dropped.has(c.chunkId) ? "dropped" : ""} ${i >= d.retrieved.length ? "added" : ""}" data-i="${i}">
+            <td>${i >= d.retrieved.length ? "+" : i + 1}</td><td>${esc(c.chunkId)}</td><td>${esc(c.title)}</td><td>${esc(c.section)}</td>
             <td class="num">${fmt(c.cosine)}</td><td class="num">${fmt(c.rrf, 4)}</td>
             ${d.rerank ? `<td class="num">${fmt(rr[c.chunkId])}</td>` : ""}
             <td>${esc(c.tier)}</td><td>${c.level}</td><td>${esc(c.status)}${c.trust === "low" ? " (low trust)" : ""}</td>
@@ -505,6 +515,7 @@ function llmPanel(d) {
 
 // ---- interactivity after each render ----
 function wire(d) {
+  const rows = [...d.retrieved, ...d.versions.chunks];
   drawHeat(d.embedding.vector);
   const all = $("showAll");
   if (all) all.onclick = () => {
@@ -522,7 +533,7 @@ function wire(d) {
       const i = row.dataset.i;
       document.querySelectorAll("tr.chunk").forEach((r) => r.classList.toggle("sel", r === row && open !== i));
       if (open === i) { $("chunkView").hidden = true; open = null; return; }
-      const c = d.retrieved[i];
+      const c = rows[i];
       $("chunkViewTitle").textContent = `${c.chunkId} | ${c.title}${c.section ? " > " + c.section : ""}`;
       $("chunkViewText").textContent = c.text;
       $("chunkView").hidden = false;

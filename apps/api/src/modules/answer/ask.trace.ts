@@ -1,5 +1,5 @@
-import type { Answer } from "../modules/answer/answer.types.js";
-import type { AskOptions, AskResult } from "../modules/answer/answer.service.js";
+import type { Answer } from "./answer.types.js";
+import type { AskOptions, AskResult } from "./answer.service.js";
 
 /**
  * Human-readable trace of one ask, every stage from query embedding to the
@@ -25,14 +25,9 @@ const indent = (text: string, pad = "    ") =>
     .map((l) => (l.length > 0 ? pad + l : l))
     .join("\n");
 
-const oneLine = (text: string, max: number) => {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max)}...` : flat;
-};
-
 const fmtCos = (c: number | null) => (c === null ? " n/a " : c.toFixed(3));
 
-function step(n: number, title: string, meta?: string): string {
+function step(n: number | string, title: string, meta?: string): string {
   return `\n${RULE}\nSTEP ${n}  ${title}${meta ? `   (${meta})` : ""}\n${RULE}\n`;
 }
 
@@ -60,11 +55,11 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     `LLM:       ${ctx.llm.modelId} @ ${ctx.llm.baseUrl}`,
     `Options:   topK=${o.topK} order=${o.orderBy} statuses=${(o.includeStatuses ?? ["current"]).join(",")} ` +
       `asOf=${o.asOf ?? "today"} minCosine=${o.minCosine ?? "none"} gateCosine=${o.gateCosine} ` +
-      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars} ` +
+      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars} versionChunks=${o.versionChunks} ` +
       `rerank=${o.rerank ? `pool:${o.rerank.pool},min:${o.rerank.minScore}` : "off"}`,
     `Total:     ${(debug.totalMs / 1000).toFixed(1)} s`,
     "",
-    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> resolve authority -> prompt -> LLM -> finalize -> answer`,
+    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> other versions -> resolve authority -> prompt -> LLM -> finalize -> answer`,
   );
 
   // 1. Embedding
@@ -97,7 +92,8 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
       `     tier=${c.tier} level=${c.level} rank=${c.authorityRank} status=${c.status} from=${c.effectiveFrom} trust=${c.trust}`,
       `     cosine=${fmtCos(c.cosine)}  rrf=${c.score.toFixed(4)}${rerankScore === undefined ? "" : `  rerank=${rerankScore.toFixed(4)}`}`,
       `     relations: ${c.relations.length === 0 ? "none" : c.relations.map((r) => `${r.kind} ${r.documentId} v${r.version}`).join("; ")}`,
-      `     text: ${oneLine(c.text, 240)}`,
+      "     text:",
+      indent(c.text.trim(), "       "),
       "",
     );
   }
@@ -127,6 +123,25 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
       out.push(`Dropped: ${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}] ${score}`);
     }
 
+    // 4b. Other versions of the documents found
+    out.push(step("4b", "ADD OTHER VERSIONS OF THE FILES FOUND", `${debug.versions.ms} ms, ${debug.versions.chunks.length} chunks`));
+    out.push(
+      o.versionChunks > 0
+        ? `For every file found, the best ${o.versionChunks} chunk(s) of each other version this user can see, by cosine to the question.`
+        : "Off (versionChunks=0).",
+      "",
+    );
+    if (o.versionChunks > 0 && debug.versions.chunks.length === 0) out.push("No other versions visible.");
+    for (const c of debug.versions.chunks) {
+      out.push(
+        `+  ${c.source.documentId} v${c.source.version}  "${c.source.title}"  status=${c.status} from=${c.effectiveFrom}`,
+        `     section: ${c.source.sectionPath.join(" > ")}   chunk ${c.source.chunkIndex}   cosine=${fmtCos(c.cosine)}`,
+        "     text:",
+        indent(c.text.trim(), "       "),
+        "",
+      );
+    }
+
     // 5. Authority
     out.push(step(5, "RESOLVE VERSIONS AND AUTHORITY (no LLM)", `${debug.evidence.length} documents`));
     out.push(
@@ -136,11 +151,12 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
       "  secondary   lower authority; fills gaps, loses on conflict",
       "  supporting  record / unverified; background only",
       "  historical  superseded, retired or older version; never the current rule",
+      "Priority 1 wins. It follows role, then level, tier and date; equal-authority primaries share it.",
       "",
     );
     for (const d of debug.evidence) {
       out.push(
-        `${d.id}  ${d.role.toUpperCase()}${d.equalAuthority ? " (equal authority with another primary)" : ""}`,
+        `${d.id}  priority ${d.priority}  ${d.role.toUpperCase()}${d.equalAuthority ? " (equal authority with another primary)" : ""}`,
         `    ${d.documentId} v${d.version}  "${d.title}"`,
         `    tier=${d.tier} level=${d.level} rank=${d.authorityRank} status=${d.status} from=${d.effectiveFrom} owner=${d.owner}`,
         `    chunks sent: ${d.chunks.length} (${d.chunks.map((c) => c.source.sectionPath.join(" > ")).join(" | ")})`,
@@ -170,7 +186,8 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     out.push(step(8, "FINALIZE THE ANSWER (no LLM)"));
     out.push(
       "Detect a refusal; append the documents the model was given as sources;",
-      "flag any number in the answer that the documents, the question and today's date do not contain.",
+      "flag any number in the answer that the documents, the question and today's date do not contain,",
+      "and any number only an old version contains, unless its sentence says it is old.",
       "",
     );
     if (answer.warnings.length === 0) out.push("All checks passed.");

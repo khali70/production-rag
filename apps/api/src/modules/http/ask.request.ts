@@ -12,12 +12,15 @@ export const AskRequestSchema = z.strictObject({
   question: z.string().trim().min(1).max(2000),
   k: z.number().int().min(1).max(50).default(3),
   order: z.enum(["relevance", "precedence"]).default("precedence"),
-  statuses: z.array(z.enum(["current", "superseded", "retired"])).min(1).default(["current"]),
+  // Every status by default: old versions reach the prompt marked as old, so
+  // the model can say what changed instead of never seeing it.
+  statuses: z.array(z.enum(["current", "superseded", "retired"])).min(1).default(["current", "superseded", "retired"]),
   minCosine: z.number().min(-1).max(1).nullable().default(null),
   gateCosine: z.number().min(-1).max(1).default(0.3),
   cosineMargin: z.number().min(0).max(2).default(0.15),
   asOf: z.iso.date().nullable().default(null),
   maxContextChars: z.number().int().min(500).max(100_000).default(12_000),
+  versionChunks: z.number().int().min(0).max(10).default(2),
   rerank: z
     .strictObject({
       pool: z.number().int().min(1).max(100).default(5),
@@ -44,6 +47,7 @@ export function toAskOptions(req: AskRequest): AskOptions {
     gateCosine: req.gateCosine,
     relativeCosineMargin: req.cosineMargin,
     maxContextChars: req.maxContextChars,
+    versionChunks: req.versionChunks,
     rerank: req.rerank ?? undefined,
   };
 }

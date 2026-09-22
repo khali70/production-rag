@@ -154,6 +154,69 @@ export function describeVectorStoreContract(
       expect(withRetired.map((r) => r.source.version).sort()).toEqual(["2.1", "3.0"]);
     });
 
+    it("returns the other versions of a found document, best chunks first, skipping versions already found", async () => {
+      // Cosine to the query: #1 = 1.0, #0 = 0.8, #2 = 0.
+      const near = unitVector(0).map((x, i) => (i === 0 ? 0.8 : i === 5 ? 0.6 : x));
+      await harness.store.upsert([makeChunk({ documentId: "POL", version: "3.0" })]);
+      await harness.store.upsert([
+        makeChunk({ documentId: "POL", version: "2.1", status: "retired", chunkIndex: 0, embedding: near }),
+        makeChunk({ documentId: "POL", version: "2.1", status: "retired", chunkIndex: 1, embedding: unitVector(0) }),
+        makeChunk({ documentId: "POL", version: "2.1", status: "retired", chunkIndex: 2, embedding: unitVector(6) }),
+      ]);
+      await harness.store.upsert([makeChunk({ documentId: "OTHER", version: "1.0", status: "retired" })]);
+
+      const found = await harness.store.versions(PROCUREMENT, {
+        embedding: unitVector(0),
+        documentIds: ["POL"],
+        skipVersions: ["POL@3.0"],
+        perVersion: 2,
+        includeStatuses: ["current", "retired"],
+      });
+      expect(found.map((c) => c.chunkId)).toEqual(["POL@2.1#0", "POL@2.1#1"]);
+      expect(found.every((c) => c.status === "retired" && c.cosine !== null)).toBe(true);
+
+      // The closest chunk of the old version is kept when only one is asked for.
+      const one = await harness.store.versions(PROCUREMENT, {
+        embedding: unitVector(0),
+        documentIds: ["POL"],
+        skipVersions: ["POL@3.0"],
+        perVersion: 1,
+        includeStatuses: ["current", "retired"],
+      });
+      expect(one.map((c) => c.chunkId)).toEqual(["POL@2.1#1"]);
+
+      // Statuses are still filtered: without "retired" the old version is invisible.
+      const currentOnly = await harness.store.versions(PROCUREMENT, {
+        embedding: unitVector(0),
+        documentIds: ["POL"],
+        skipVersions: ["POL@3.0"],
+        perVersion: 2,
+      });
+      expect(currentOnly).toEqual([]);
+    });
+
+    it("never returns another version the user may not see", async () => {
+      await harness.store.upsert([makeChunk({ documentId: "POL", version: "3.0" })]);
+      await harness.store.upsert([
+        makeChunk({
+          documentId: "POL",
+          version: "2.1",
+          status: "retired",
+          allowedGroups: ["hr_investigations"],
+          classification: "RESTRICTED_HR_INVESTIGATION",
+          classificationGroups: ["hr_investigations"],
+        }),
+      ]);
+      const found = await harness.store.versions(ENGINEER, {
+        embedding: unitVector(0),
+        documentIds: ["POL"],
+        skipVersions: ["POL@3.0"],
+        perVersion: 2,
+        includeStatuses: ["current", "retired"],
+      });
+      expect(found).toEqual([]);
+    });
+
     it("excludes a version that is not effective yet on the as-of date", async () => {
       await harness.store.upsert([
         makeChunk({ documentId: "POL", version: "3.0", effectiveFrom: "2026-07-01" }),
