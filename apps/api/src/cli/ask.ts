@@ -33,14 +33,14 @@ async function main(): Promise<void> {
       order: { type: "string", default: "precedence" },
       statuses: { type: "string", default: "current" },
       "min-cosine": { type: "string" },
-      "gate-cosine": { type: "string", default: "0.6" },
+      "gate-cosine": { type: "string", default: "0.3" },
       "cosine-margin": { type: "string", default: "0.15" },
       "as-of": { type: "string" },
       "max-context-chars": { type: "string", default: "12000" },
       rerank: { type: "boolean", default: false },
       "rerank-pool": { type: "string", default: "5" },
       "rerank-min": { type: "string", default: "0.1" },
-      "trace-file": { type: "string" },
+      "trace-file": { type: "string", default: "traces/ask.txt" },
       quiet: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
   const question = positionals.join(" ").trim();
   if (!values.user || question.length === 0) {
     throw new Error(
-      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current] [--min-cosine N] [--gate-cosine 0.5] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
+      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current] [--min-cosine N] [--gate-cosine 0.3] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
     );
   }
 

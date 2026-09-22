@@ -3,7 +3,7 @@ import { AppConfig } from "../../config/app-config.js";
 import { EmbeddingPort } from "../../ports/embedding.port.js";
 
 /**
- * bge-small-en-v1.5 running in-process on CPU through transformers.js (ONNX).
+ * bge-v1.5 style embedder (bge-v1.5, snowflake-arctic-embed v1.5) running in-process on CPU through transformers.js (ONNX).
  *
  * Chosen over an Ollama-hosted model so the assessed run path has one less
  * prerequisite process: `pnpm ingest` works with nothing but Node and Docker.

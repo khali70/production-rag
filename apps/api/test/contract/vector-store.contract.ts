@@ -5,7 +5,7 @@ import {
   MissingScopeError,
   type VectorStorePort,
 } from "../../src/ports/vector-store.port.js";
-import { ENGINEER, HR, PROCUREMENT, makeChunk, unitVector } from "./fixtures.js";
+import { ENGINEER, HR, PROCUREMENT, VECTOR_DIM, makeChunk, unitVector } from "./fixtures.js";
 
 export type ContractHarness = {
   store: VectorStorePort;
@@ -324,7 +324,7 @@ export function describeVectorStoreContract(
         makeChunk({
           documentId: `BULK-${i}`,
           chunkIndex: i,
-          embedding: unitVector(i % 384),
+          embedding: unitVector(i % VECTOR_DIM),
           allowedGroups: ["all_employees"],
           classificationGroups: ["all_employees"],
           text: "general company information about vendors and process",

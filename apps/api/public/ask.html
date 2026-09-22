@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask Playground</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #1b1f24;
+    --muted: #5e6875;
+    --line: #e2e6eb;
+    --accent: #2f6fdb;
+    --accent-ink: #ffffff;
+    --soft: #eef3fc;
+    --ok: #1f8a4c;
+    --warn: #b7791f;
+    --bad: #c53030;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --panel: #171b21;
+      --ink: #e6e9ee;
+      --muted: #97a1ad;
+      --line: #2a3038;
+      --accent: #6c9cf0;
+      --accent-ink: #0f1216;
+      --soft: #1c2533;
+      --ok: #4cc27f;
+      --warn: #e0a84a;
+      --bad: #ef6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header .models { color: var(--muted); font-size: 12px; font-family: var(--mono); }
+  main {
+    display: grid; grid-template-columns: 360px 1fr; gap: 20px;
+    padding: 20px 24px; max-width: 1400px; margin: 0 auto;
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 16px; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  form.panel { align-self: start; position: sticky; top: 16px; }
+  @media (max-width: 900px) { form.panel { position: static; } }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 18px 0 8px; }
+  h2:first-child { margin-top: 0; }
+  label.field { display: block; margin-bottom: 12px; }
+  .lbl { display: flex; justify-content: space-between; font-weight: 500; margin-bottom: 4px; }
+  .lbl output { font-family: var(--mono); color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  select, textarea, input[type=number], input[type=date] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--bg); color: var(--ink); font: inherit;
+  }
+  textarea { min-height: 84px; resize: vertical; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .check { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; }
+  .seg label { flex: 1; text-align: center; padding: 6px; cursor: pointer; }
+  .seg input { display: none; }
+  .seg input:checked + span { color: var(--accent); font-weight: 600; }
+  .seg label:has(input:checked) { background: var(--soft); }
+  .sub { border-left: 2px solid var(--line); padding-left: 12px; margin: 4px 0 12px; }
+  .sub[hidden] { display: none; }
+  button {
+    width: 100%; padding: 10px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); font: 600 14px system-ui, sans-serif;
+  }
+  button:disabled { opacity: .6; cursor: progress; }
+  .groups { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-word; }
+  .kbd { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: center; margin-top: 6px; }
+
+  #out { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 16px; }
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .04em; border: 1px solid currentColor;
+  }
+  .answered { color: var(--ok); } .qualified { color: var(--warn); } .refused { color: var(--bad); }
+  .summary { font-size: 16px; margin: 10px 0 4px; }
+  ul.claims { padding-left: 18px; margin: 8px 0; }
+  ul.claims li { margin-bottom: 8px; }
+  .cite {
+    display: inline-block; font-family: var(--mono); font-size: 11px; padding: 0 6px; margin-left: 4px;
+    border-radius: 4px; background: var(--soft); color: var(--accent); cursor: help;
+  }
+  .note { border-left: 3px solid var(--warn); padding: 6px 10px; background: var(--soft); border-radius: 0 6px 6px 0; margin: 6px 0; }
+  .note.bad { border-color: var(--bad); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+  .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .stat b { display: block; font-family: var(--mono); font-size: 15px; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .gauge { position: relative; height: 10px; border-radius: 5px; background: var(--line); margin: 8px 0 4px; }
+  .gauge .fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: var(--accent); }
+  .gauge .mark { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--bad); }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { font-family: var(--mono); text-align: right; }
+  tr.dropped td { opacity: .45; text-decoration: line-through; }
+  .error { color: var(--bad); white-space: pre-wrap; font-family: var(--mono); font-size: 12px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  pre { font-family: var(--mono); font-size: 11px; overflow: auto; max-height: 400px; background: var(--bg); padding: 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+  canvas.heat { width: 100%; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); display: block; }
+  .legend { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .vals { font-family: var(--mono); font-size: 11px; color: var(--muted); word-break: break-all; margin-top: 8px; }
+  .btn-sm { width: auto; padding: 4px 10px; font-size: 12px; background: var(--soft); color: var(--accent); border: 1px solid var(--line); }
+  tr.chunk { cursor: pointer; }
+  tr.chunk:hover td { background: var(--soft); }
+  tr.chunk.sel td { background: var(--soft); }
+  #chunkView[hidden] { display: none; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 10px; flex-wrap: wrap; }
+  .tabs button { width: auto; background: none; color: var(--muted); border-radius: 6px 6px 0 0; padding: 6px 12px; font-weight: 500; }
+  .tabs button.on { color: var(--accent); background: var(--soft); }
+  .tabpane[hidden] { display: none; }
+  .attempt { font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ask Playground</h1>
+  <span class="models" id="models">loading models...</span>
+</header>
+
+<main>
+  <form class="panel" id="form" autocomplete="off">
+    <h2>Question</h2>
+    <label class="field">
+      <div class="lbl">User</div>
+      <select id="userId" required><option value="">loading users...</option></select>
+      <div class="groups" id="groups"></div>
+    </label>
+    <label class="field">
+      <div class="lbl">Query</div>
+      <textarea id="question" required placeholder="Who approves a new enterprise vendor?"></textarea>
+    </label>
+
+    <h2>Retrieval</h2>
+    <label class="field">
+      <div class="lbl">Top k <output id="kOut"></output></div>
+      <input type="range" id="k" min="1" max="20" step="1" value="3">
+    </label>
+    <label class="field">
+      <div class="lbl">Gate cosine <output id="gateCosineOut"></output></div>
+      <input type="range" id="gateCosine" min="0" max="1" step="0.01" value="0.3">
+      <div class="hint">Refuse without calling the LLM when the best cosine is below this.</div>
+    </label>
+    <label class="field">
+      <div class="lbl">Cosine margin <output id="cosineMarginOut"></output></div>
+      <input type="range" id="cosineMargin" min="0" max="1" step="0.01" value="0.15">
+      <div class="hint">Drop chunks this far below the best cosine. Ignored with rerank.</div>
+    </label>
+    <label class="field">
+      <div class="lbl">
+        <span class="check"><input type="checkbox" id="minCosineOn"> Min cosine</span>
+        <output id="minCosineOut"></output>
+      </div>
+      <input type="range" id="minCosine" min="0" max="1" step="0.01" value="0.2" disabled>
+      <div class="hint">Hard floor in SQL, applied to vector and keyword hits.</div>
+    </label>
+    <div class="field">
+      <div class="lbl">Order</div>
+      <div class="seg">
+        <label><input type="radio" name="order" value="precedence" checked><span>precedence</span></label>
+        <label><input type="radio" name="order" value="relevance"><span>relevance</span></label>
+      </div>
+    </div>
+    <div class="field">
+      <div class="lbl">Statuses</div>
+      <div class="row">
+        <label class="check"><input type="checkbox" name="status" value="current" checked> current</label>
+        <label class="check"><input type="checkbox" name="status" value="superseded"> superseded</label>
+        <label class="check"><input type="checkbox" name="status" value="retired"> retired</label>
+      </div>
+    </div>
+
+    <h2>Rerank</h2>
+    <label class="field check"><input type="checkbox" id="rerankOn"> Cross-encoder rerank</label>
+    <div class="sub" id="rerankBox" hidden>
+      <label class="field">
+        <div class="lbl">Pool <output id="rerankPoolOut"></output></div>
+        <input type="range" id="rerankPool" min="1" max="50" step="1" value="20">
+        <div class="hint">Candidates fetched before reranking. Never below k.</div>
+      </label>
+      <label class="field">
+        <div class="lbl">Min score <output id="rerankMinOut"></output></div>
+        <input type="range" id="rerankMin" min="0" max="1" step="0.01" value="0.1">
+      </label>
+    </div>
+
+    <h2>Context</h2>
+    <div class="row">
+      <label class="field" style="flex:1">
+        <div class="lbl">Max context chars</div>
+        <input type="number" id="maxContextChars" min="500" max="100000" step="500" value="12000">
+      </label>
+      <label class="field" style="flex:1">
+        <div class="lbl">As of</div>
+        <input type="date" id="asOf">
+      </label>
+    </div>
+
+    <button type="submit" id="go">Ask</button>
+    <div class="kbd">Cmd/Ctrl + Enter</div>
+  </form>
+
+  <section id="out">
+    <div class="panel empty">Pick a user, write a question, press Ask.</div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmt = (n, d = 3) => (n === null || n === undefined ? "n/a" : Number(n).toFixed(d));
+const STORE = "ask-playground-v1";
+let users = [];
+
+// ---- sliders ----
+const sliders = ["k", "gateCosine", "cosineMargin", "minCosine", "rerankPool", "rerankMin"];
+function syncOutputs() {
+  for (const id of sliders) {
+    const el = $(id);
+    $(id + "Out").textContent = el.step === "1" ? el.value : Number(el.value).toFixed(2);
+  }
+  $("minCosineOut").style.opacity = $("minCosineOn").checked ? 1 : 0.4;
+  // Rerank pool can never be smaller than k.
+  $("rerankPool").min = $("k").value;
+  if (+$("rerankPool").value < +$("k").value) $("rerankPool").value = $("k").value;
+  $("rerankPoolOut").textContent = $("rerankPool").value;
+}
+$("minCosineOn").addEventListener("change", () => { $("minCosine").disabled = !$("minCosineOn").checked; syncOutputs(); save(); });
+$("rerankOn").addEventListener("change", () => { $("rerankBox").hidden = !$("rerankOn").checked; save(); });
+$("form").addEventListener("input", () => { syncOutputs(); save(); });
+
+// ---- persistence (per browser convenience only) ----
+function snapshot() {
+  const v = {};
+  for (const el of $("form").querySelectorAll("input, select, textarea")) {
+    if (!el.id && !el.name) continue;
+    const key = el.id || `${el.name}:${el.value}`;
+    v[key] = el.type === "checkbox" || el.type === "radio" ? el.checked : el.value;
+  }
+  return v;
+}
+function save() { try { localStorage.setItem(STORE, JSON.stringify(snapshot())); } catch {} }
+function restore() {
+  let v;
+  try { v = JSON.parse(localStorage.getItem(STORE) || "null"); } catch {}
+  if (!v) return;
+  for (const el of $("form").querySelectorAll("input, select, textarea")) {
+    const key = el.id || `${el.name}:${el.value}`;
+    if (!(key in v)) continue;
+    if (el.type === "checkbox" || el.type === "radio") el.checked = v[key];
+    else el.value = v[key];
+  }
+  $("minCosine").disabled = !$("minCosineOn").checked;
+  $("rerankBox").hidden = !$("rerankOn").checked;
+}
+
+// ---- users + models ----
+function showGroups() {
+  const u = users.find((x) => x.userId === $("userId").value);
+  $("groups").textContent = u ? `${u.department} | ${u.groups.join(", ")}` : "";
+}
+$("userId").addEventListener("change", showGroups);
+
+async function boot() {
+  try {
+    const [uRes, iRes] = await Promise.all([fetch("/api/users"), fetch("/api/info")]);
+    users = await uRes.json();
+    const info = await iRes.json();
+    $("models").textContent = `embed: ${info.embedding.modelId} (${info.embedding.dim}d)  |  llm: ${info.llm.modelId}`;
+    $("userId").innerHTML = '<option value="">choose a user</option>' + users
+      .map((u) => `<option value="${esc(u.userId)}">${esc(u.userId)}${u.displayName ? " - " + esc(u.displayName) : ""} (${esc(u.department)})</option>`)
+      .join("");
+  } catch (e) {
+    $("models").textContent = "API not reachable";
+  }
+  restore();
+  syncOutputs();
+  showGroups();
+}
+
+// ---- ask ----
+function body() {
+  const statuses = [...document.querySelectorAll('input[name=status]:checked')].map((x) => x.value);
+  return {
+    userId: $("userId").value,
+    question: $("question").value,
+    k: +$("k").value,
+    order: document.querySelector('input[name=order]:checked').value,
+    statuses: statuses.length ? statuses : ["current"],
+    minCosine: $("minCosineOn").checked ? +$("minCosine").value : null,
+    gateCosine: +$("gateCosine").value,
+    cosineMargin: +$("cosineMargin").value,
+    asOf: $("asOf").value || null,
+    maxContextChars: +$("maxContextChars").value,
+    rerank: $("rerankOn").checked ? { pool: +$("rerankPool").value, minScore: +$("rerankMin").value } : null,
+  };
+}
+
+let timer;
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  if (!$("form").reportValidity()) return;
+  const started = Date.now();
+  $("go").disabled = true;
+  $("out").innerHTML = '<div class="panel empty" id="wait">Working... 0 s</div>';
+  clearInterval(timer);
+  timer = setInterval(() => {
+    const w = $("wait");
+    if (w) w.textContent = `Working... ${Math.round((Date.now() - started) / 1000)} s (embed, search, LLM)`;
+  }, 500);
+  try {
+    const res = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body()) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`${res.status} ${data.message ?? res.statusText}`);
+    render(data, Date.now() - started);
+  } catch (e) {
+    $("out").innerHTML = `<div class="panel"><h2>Request failed</h2><div class="error">${esc(e.message)}</div></div>`;
+  } finally {
+    clearInterval(timer);
+    $("go").disabled = false;
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") $("form").requestSubmit();
+});
+
+// ---- render ----
+function cites(list) {
+  return (list || []).map((c) =>
+    `<span class="cite" title="${esc(`${c.source.documentId} v${c.source.version} - ${c.source.title}${c.source.sectionPath?.length ? " > " + c.source.sectionPath.join(" > ") : ""}`)}">${esc(c.id)} ${esc(c.role)}</span>`
+  ).join("");
+}
+
+function render({ answer: a, diagnostics: d }, wallMs) {
+  const gate = +$("gateCosine").value;
+  const best = d.bestCosine;
+  const tokens = d.generations.reduce((s, g) => ({ i: s.i + g.usage.inputTokens, o: s.o + g.usage.outputTokens }), { i: 0, o: 0 });
+  const llmMs = d.generations.reduce((s, g) => s + g.latencyMs, 0);
+  const dropped = new Set(d.offTopic);
+  const rr = d.rerank?.scores ?? {};
+
+  $("out").innerHTML = `
+    <div class="panel">
+      <span class="badge ${esc(a.status)}">${esc(a.status)}</span>
+      <p class="summary">${esc(a.summary)}</p>
+      ${a.claims.length ? `<h2>Claims</h2><ul class="claims">${a.claims.map((c) => `<li>${esc(c.text)}${cites(c.citations)}</li>`).join("")}</ul>` : ""}
+      ${a.conflicts.length ? `<h2>Conflicts</h2>${a.conflicts.map((c) => `<div class="note bad">${esc(c.description)}${cites(c.citations)}</div>`).join("")}` : ""}
+      ${a.missing.length ? `<h2>Missing</h2><ul class="claims">${a.missing.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>` : ""}
+      ${a.warnings.length ? `<h2>Warnings</h2>${a.warnings.map((w) => `<div class="note">${esc(w)}</div>`).join("")}` : ""}
+    </div>
+
+    <div class="panel">
+      <h2>Pipeline</h2>
+      <div class="stats">
+        <div class="stat"><b>${(wallMs / 1000).toFixed(1)} s</b><span>total</span></div>
+        <div class="stat"><b>${d.embedding.ms} ms</b><span>embed</span></div>
+        <div class="stat"><b>${d.searchMs} ms</b><span>search</span></div>
+        ${d.rerank ? `<div class="stat"><b>${d.rerank.ms} ms</b><span>rerank</span></div>` : ""}
+        <div class="stat"><b>${d.generations.length ? (llmMs / 1000).toFixed(1) + " s" : "skipped"}</b><span>llm (${d.generations.length} call${d.generations.length === 1 ? "" : "s"})</span></div>
+        <div class="stat"><b>${tokens.i} / ${tokens.o}</b><span>tokens in / out</span></div>
+      </div>
+      <h2>Best cosine vs gate</h2>
+      <div class="gauge">
+        <div class="fill" style="width:${Math.max(0, Math.min(1, best ?? 0)) * 100}%"></div>
+        <div class="mark" style="left:${gate * 100}%" title="gate ${gate}"></div>
+      </div>
+      <div class="hint">best ${fmt(best)} | gate ${gate.toFixed(2)}${d.gate ? ` | <span class="refused">refused: ${esc(d.gate)}</span>` : ""}</div>
+      ${d.retrieved.length === 0 && $("minCosineOn").checked ? `<div class="note">Min cosine is on (${(+$("minCosine").value).toFixed(2)}). The SQL floor drops every chunk below it, so nothing reached the gate. Lower it or turn it off.</div>` : ""}
+      ${d.parseErrors.some(Boolean) ? `<h2>Parse errors</h2>${d.parseErrors.filter(Boolean).map((e) => `<div class="note bad">${esc(e)}</div>`).join("")}` : ""}
+    </div>
+
+    ${embeddingPanel(d.embedding)}
+
+    ${d.evidence.length ? `
+    <div class="panel">
+      <h2>Evidence sent to the LLM</h2>
+      <div class="tablewrap"><table>
+        <tr><th>id</th><th>role</th><th>document</th><th>title</th><th>note</th></tr>
+        ${d.evidence.map((e) => `<tr><td>${esc(e.id)}</td><td>${esc(e.role)}</td><td>${esc(e.documentId)} v${esc(e.version)}</td><td>${esc(e.title)}</td><td>${esc(e.note ?? "")}</td></tr>`).join("")}
+      </table></div>
+    </div>` : ""}
+
+    <div class="panel">
+      <h2>Retrieved chunks (${d.retrieved.length})</h2>
+      <div class="hint" style="margin-bottom:6px">Click a row to see the chunk text. Struck-through rows were dropped as off-topic.</div>
+      <div class="tablewrap"><table>
+        <tr><th>#</th><th>chunk</th><th>title</th><th>section</th><th>cosine</th><th>rrf</th>${d.rerank ? "<th>rerank</th>" : ""}<th>tier</th><th>lvl</th><th>status</th></tr>
+        ${d.retrieved.map((c, i) => `
+          <tr class="chunk ${dropped.has(c.chunkId) ? "dropped" : ""}" data-i="${i}">
+            <td>${i + 1}</td><td>${esc(c.chunkId)}</td><td>${esc(c.title)}</td><td>${esc(c.section)}</td>
+            <td class="num">${fmt(c.cosine)}</td><td class="num">${fmt(c.rrf, 4)}</td>
+            ${d.rerank ? `<td class="num">${fmt(rr[c.chunkId])}</td>` : ""}
+            <td>${esc(c.tier)}</td><td>${c.level}</td><td>${esc(c.status)}${c.trust === "low" ? " (low trust)" : ""}</td>
+          </tr>`).join("")}
+      </table></div>
+      <div id="chunkView" hidden>
+        <div class="attempt" id="chunkViewTitle"></div>
+        <pre id="chunkViewText"></pre>
+      </div>
+    </div>
+
+    ${llmPanel(d)}
+
+    <div class="panel">
+      <details><summary>Raw JSON</summary><pre>${esc(JSON.stringify({ answer: a, diagnostics: { ...d, embedding: { ...d.embedding, vector: `[${d.embedding.vector.length} values]` } } }, null, 2))}</pre></details>
+    </div>`;
+  wire(d);
+}
+
+// ---- embedding panel ----
+function embeddingPanel(e) {
+  const v = e.vector;
+  const min = Math.min(...v), max = Math.max(...v);
+  const mean = v.reduce((s, x) => s + x, 0) / v.length;
+  return `
+    <div class="panel">
+      <h2>Query embedding</h2>
+      <div class="stats">
+        <div class="stat"><b>${e.dim}</b><span>dimensions</span></div>
+        <div class="stat"><b>${fmt(e.norm, 4)}</b><span>L2 norm</span></div>
+        <div class="stat"><b>${fmt(min, 4)}</b><span>min</span></div>
+        <div class="stat"><b>${fmt(max, 4)}</b><span>max</span></div>
+        <div class="stat"><b>${fmt(mean, 5)}</b><span>mean</span></div>
+        <div class="stat"><b>${e.ms} ms</b><span>embed time</span></div>
+      </div>
+      <div class="hint" style="margin:8px 0">${esc(e.modelId)} | scheme <code>${esc(e.prefixScheme)}</code></div>
+      <canvas class="heat" id="heat"></canvas>
+      <div class="legend"><span>negative ${fmt(min, 3)}</span><span>one cell per dimension, row by row</span><span>positive ${fmt(max, 3)}</span></div>
+      <div class="vals" id="vals">[${v.slice(0, 16).map((x) => x.toFixed(4)).join(", ")}, ...]</div>
+      <div class="row" style="margin-top:8px">
+        <button type="button" class="btn-sm" id="showAll">Show all ${e.dim} values</button>
+        <button type="button" class="btn-sm" id="copyVec">Copy vector</button>
+      </div>
+    </div>`;
+}
+
+function drawHeat(v) {
+  const canvas = $("heat");
+  if (!canvas) return;
+  const cols = 48, rows = Math.ceil(v.length / cols), cell = 12;
+  canvas.width = cols * cell;
+  canvas.height = rows * cell;
+  const ctx = canvas.getContext("2d");
+  const scale = Math.max(...v.map(Math.abs)) || 1;
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const base = dark ? [23, 27, 33] : [255, 255, 255];
+  const pos = [47, 111, 219], neg = [213, 63, 63];
+  v.forEach((x, i) => {
+    const t = Math.min(1, Math.abs(x) / scale);
+    const c = x >= 0 ? pos : neg;
+    const mix = base.map((b, k) => Math.round(b + (c[k] - b) * t));
+    ctx.fillStyle = `rgb(${mix.join(",")})`;
+    ctx.fillRect((i % cols) * cell, Math.floor(i / cols) * cell, cell, cell);
+  });
+  canvas.onmousemove = (ev) => {
+    const r = canvas.getBoundingClientRect();
+    const col = Math.floor(((ev.clientX - r.left) / r.width) * cols);
+    const row = Math.floor(((ev.clientY - r.top) / r.height) * rows);
+    const i = row * cols + col;
+    canvas.title = i < v.length ? `dim ${i}: ${v[i].toFixed(5)}` : "";
+  };
+}
+
+// ---- llm panel ----
+function pretty(raw) {
+  try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
+}
+
+function llmPanel(d) {
+  const L = d.llm;
+  if (!L.prompt) {
+    return `<div class="panel"><h2>LLM</h2><div class="hint">Not called: ${esc(d.gate ?? "pipeline stopped before generation")}.</div></div>`;
+  }
+  const attempts = L.raw.map((raw, i) => {
+    const g = d.generations[i];
+    const err = d.parseErrors[i];
+    return `
+      <div class="attempt">Attempt ${i + 1}${g ? ` | ${(g.latencyMs / 1000).toFixed(1)} s | ${g.usage.inputTokens} in / ${g.usage.outputTokens} out | ${esc(g.modelId)}` : ""}
+        | ${err ? `<span class="refused">parse error: ${esc(err)}</span>` : `<span class="answered">parsed</span>`}</div>
+      <pre>${esc(pretty(raw))}</pre>`;
+  }).join("");
+  const thinking = L.reasoning.filter((r) => r && r.trim());
+  const tabs = [
+    ["out", "Raw output", attempts || '<div class="hint">No output.</div>'],
+    ...(thinking.length ? [["think", "Reasoning", thinking.map((r, i) => `<div class="attempt">Attempt ${i + 1}</div><pre>${esc(r)}</pre>`).join("")]] : []),
+    ["user", "User prompt", `<pre>${esc(L.prompt.user)}</pre>`],
+    ["sys", "System prompt", `<pre>${esc(L.prompt.system)}</pre>`],
+  ];
+  return `
+    <div class="panel">
+      <h2>LLM result | ${esc(L.modelId)}</h2>
+      <div class="tabs">${tabs.map(([id, name], i) => `<button type="button" data-tab="${id}" class="${i === 0 ? "on" : ""}">${name}</button>`).join("")}</div>
+      ${tabs.map(([id, , html], i) => `<div class="tabpane" data-pane="${id}" ${i === 0 ? "" : "hidden"}>${html}</div>`).join("")}
+    </div>`;
+}
+
+// ---- interactivity after each render ----
+function wire(d) {
+  drawHeat(d.embedding.vector);
+  const all = $("showAll");
+  if (all) all.onclick = () => {
+    $("vals").textContent = `[${d.embedding.vector.map((x) => x.toFixed(4)).join(", ")}]`;
+    all.remove();
+  };
+  const copy = $("copyVec");
+  if (copy) copy.onclick = async () => {
+    try { await navigator.clipboard.writeText(JSON.stringify(d.embedding.vector)); copy.textContent = "Copied"; }
+    catch { copy.textContent = "Copy failed"; }
+  };
+  let open = null;
+  for (const row of document.querySelectorAll("tr.chunk")) {
+    row.onclick = () => {
+      const i = row.dataset.i;
+      document.querySelectorAll("tr.chunk").forEach((r) => r.classList.toggle("sel", r === row && open !== i));
+      if (open === i) { $("chunkView").hidden = true; open = null; return; }
+      const c = d.retrieved[i];
+      $("chunkViewTitle").textContent = `${c.chunkId} | ${c.title}${c.section ? " > " + c.section : ""}`;
+      $("chunkViewText").textContent = c.text;
+      $("chunkView").hidden = false;
+      open = i;
+    };
+  }
+  for (const b of document.querySelectorAll(".tabs button")) {
+    b.onclick = () => {
+      const panel = b.closest(".panel");
+      panel.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
+      panel.querySelectorAll(".tabpane").forEach((p) => { p.hidden = p.dataset.pane !== b.dataset.tab; });
+    };
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

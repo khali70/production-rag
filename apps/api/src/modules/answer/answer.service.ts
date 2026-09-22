@@ -38,7 +38,8 @@ export type AskResult = {
   answer: Answer;
   /** For the CLI and evals. Holds document text: never log or return it to an unprivileged caller. */
   debug: {
-    embedding: { dim: number; preview: number[]; ms: number };
+    /** vector is the full query embedding, for diagnostics UIs. */
+    embedding: { dim: number; preview: number[]; vector: number[]; ms: number };
     retrieved: ScoredChunk[];
     searchMs: number;
     bestCosine: number;
@@ -105,7 +106,12 @@ export class AnswerService {
     // 1. Embed the question.
     const embedded = await this.embed.run(question);
     const debug: AskResult["debug"] = {
-      embedding: { dim: embedded.vector.length, preview: embedded.vector.slice(0, 8), ms: embedded.ms },
+      embedding: {
+        dim: embedded.vector.length,
+        preview: embedded.vector.slice(0, 8),
+        vector: embedded.vector,
+        ms: embedded.ms,
+      },
       retrieved: [],
       searchMs: 0,
       bestCosine: -1,

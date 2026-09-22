@@ -44,6 +44,8 @@ export class OpenAiCompatLlm extends LlmPort {
       stream: true,
       stream_options: { include_usage: true },
     };
+    // /no_think alone is ignored by newer Qwen builds; Ollama honours reasoning_effort "none".
+    if (this.cfg.disableThinking) body.reasoning_effort = "none";
     if (req.seed !== undefined) body.seed = req.seed;
     if (req.jsonSchema) {
       body.response_format = {

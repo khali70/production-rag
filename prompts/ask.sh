@@ -51,7 +51,7 @@ ORDER="precedence"             # precedence | relevance (ignored when RERANK=tru
 STATUSES="current"             # comma list: current,superseded,retired
 AS_OF=""                       # YYYY-MM-DD, empty = today
 MIN_COSINE=""                  # SQL floor on the vector leg, empty = none
-GATE_COSINE=0.5                # refuse without an LLM call if best cosine is below
+GATE_COSINE=0.3                # refuse without an LLM call if best cosine is below (model-specific: arctic-m off-topic <= 0.27, on-topic >= 0.31)
 COSINE_MARGIN=0.15             # off-topic filter when not reranking
 MAX_CONTEXT_CHARS=12000        # evidence budget in the prompt
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import pg from "pg";
 import { FakeEmbeddingAdapter } from "../../src/adapters/embedding/fake-embedding.adapter.js";
@@ -8,10 +8,10 @@ import { PgPool } from "../../src/adapters/vector-store/pgvector/pg.pool.js";
 import { AppConfig } from "../../src/config/app-config.js";
 import { validateEnv } from "../../src/config/env.schema.js";
 import { describeVectorStoreContract, type ContractHarness } from "./vector-store.contract.js";
-import { ENGINEER, makeChunk, unitVector } from "./fixtures.js";
+import { ENGINEER, VECTOR_DIM, makeChunk, unitVector } from "./fixtures.js";
 
 const ROOT = resolve(import.meta.dirname, "../../../..");
-const MIGRATION = resolve(import.meta.dirname, "../../migrations/0001_init.sql");
+const MIGRATIONS_DIR = resolve(import.meta.dirname, "../../migrations");
 
 /** Reads the committed .env, the same file the CLIs use, then forces test mode. */
 function testConfig(): AppConfig {
@@ -34,7 +34,10 @@ async function makeHarness(): Promise<ContractHarness> {
   await bootstrap.connect();
   await bootstrap.query("CREATE EXTENSION IF NOT EXISTS vector");
   await bootstrap.query("DROP TABLE IF EXISTS chunks, documents, index_meta CASCADE");
-  await bootstrap.query(readFileSync(MIGRATION, "utf8"));
+  // Every migration in filename order, like the Migrator: later ones change the schema (e.g. vector dim).
+  for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort()) {
+    await bootstrap.query(readFileSync(resolve(MIGRATIONS_DIR, file), "utf8"));
+  }
   await bootstrap.end();
 
   const pool = new PgPool(config);
@@ -71,7 +74,7 @@ describe("pgvector adapter specifics", () => {
       }>("SELECT embedding FROM chunks WHERE document_id = 'ROUNDTRIP'");
 
       expect(Array.isArray(rows[0]!.embedding)).toBe(true);
-      expect(rows[0]!.embedding).toHaveLength(384);
+      expect(rows[0]!.embedding).toHaveLength(VECTOR_DIM);
       expect(rows[0]!.embedding[7]).toBeCloseTo(1, 5);
     } finally {
       await harness.close();

@@ -80,7 +80,10 @@ export function makeChunk(overrides: ChunkOverrides = {}): ChunkRecord {
 }
 
 /** Distinct unit vectors, so ordering assertions are not accidentally tied. */
-export function unitVector(seed: number, dim = 384): number[] {
+/** Must match chunks.embedding in migrations/ (and EMBEDDING_DIM in .env). */
+export const VECTOR_DIM = 768;
+
+export function unitVector(seed: number, dim = VECTOR_DIM): number[] {
   const v = new Array<number>(dim).fill(0);
   v[seed % dim] = 1;
   return v;
