@@ -252,6 +252,29 @@ describe("answer finalizer", () => {
     expect(a.message).not.toContain("Sources:");
   });
 
+  it("treats the refusal sentence later in the reply as a refusal", () => {
+    const a = finalizeAnswer(`Parental leave is not covered.\n\n${REFUSAL}`, docs, ctx);
+    expect(a.status).toBe("refused");
+    expect(a.sources).toEqual([]);
+    expect(a.warnings.join(" ")).toContain("mixes text with the refusal sentence");
+  });
+
+  it("matches dates without leading zeros", () => {
+    const dated = resolveEvidence([chunk("POL", { effectiveFrom: "2026-07-01", text: "Effective 2026-07-01." })]);
+    expect(finalizeAnswer("It took effect on July 1, 2026.", dated, ctx).status).toBe("answered");
+  });
+
+  it("reads spelled-out numbers in the reply, the evidence and the question", () => {
+    const hr = resolveEvidence([chunk("HR", { text: "Documentation after three consecutive working days." })]);
+    expect(finalizeAnswer("After 3 consecutive working days.", hr, ctx).status).toBe("answered");
+    expect(finalizeAnswer("After three consecutive working days.", hr, ctx).status).toBe("answered");
+    expect(finalizeAnswer("After two consecutive days.", hr, ctx).warnings.join(" ")).toContain("2 not found");
+    expect(finalizeAnswer("Above one hundred thousand the CFO approves.", docs, ctx).status).toBe("answered");
+    const q = { ...ctx, question: "Who approves one hundred and fifty thousand dollars?" };
+    expect(finalizeAnswer("A 150,000 vendor needs the CFO.", docs, q).status).toBe("answered");
+    expect(finalizeAnswer("Two hundred thousand needs the CFO.", docs, ctx).warnings.join(" ")).toContain("200000 not found");
+  });
+
   it("refuses an empty reply", () => {
     const a = finalizeAnswer("   ", docs, ctx);
     expect(a.status).toBe("refused");

@@ -145,3 +145,46 @@ FROM (
 ) v
 WHERE v.rn <= $7
 ORDER BY v.document_id, v.effective_from DESC, v.chunk_index`;
+
+/**
+ * Documents that amend or qualify a document the search found (any version), or
+ * the exact version a found document amends or qualifies. Supersedes is left
+ * to VERSIONS_SQL. Their best
+ * `perVersion` chunks, so a matrix or memo that changes a policy reaches the
+ * prompt even when its own wording scored lower than the policy's. Relations
+ * are read from the documents table, but every returned chunk passes the same
+ * ACL_WHERE as the search.
+ *
+ * Same parameters as VERSIONS_SQL; $2 is the found document ids.
+ */
+export const RELATED_SQL = `
+SELECT *
+FROM (
+  SELECT ${RETURNED_COLUMNS},
+         0 AS score,
+         1 - (c.embedding <=> $1::vector) AS cosine,
+         ROW_NUMBER() OVER (
+           PARTITION BY c.document_id, c.version
+           ORDER BY c.embedding <=> $1::vector, c.chunk_id
+         ) AS rn
+  FROM chunks c
+  JOIN documents d ON d.document_id = c.document_id AND d.version = c.version
+  WHERE ${ACL_WHERE}
+    AND NOT (c.document_id = ANY ($2::text[]))
+    AND NOT ((c.document_id || '@' || c.version) = ANY ($6::text[]))
+    AND (
+      EXISTS (
+        SELECT 1 FROM jsonb_array_elements(d.relations) r
+        WHERE r->>'kind' <> 'supersedes' AND r->>'documentId' = ANY ($2::text[])
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM documents s CROSS JOIN jsonb_array_elements(s.relations) r
+        WHERE s.document_id = ANY ($2::text[]) AND s.deleted_at IS NULL
+          AND r->>'kind' <> 'supersedes' AND r->>'documentId' = c.document_id
+          AND r->>'version' = c.version
+      )
+    )
+) v
+WHERE v.rn <= $7
+ORDER BY v.document_id, v.effective_from DESC, v.chunk_index`;

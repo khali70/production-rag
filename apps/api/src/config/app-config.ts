@@ -25,6 +25,8 @@ export class AppConfig {
     provider: Env["EMBEDDING_PROVIDER"];
     modelId: string;
     dim: number;
+    /** Trimmed; the adapter joins it to the query with one space. Empty = no prefix. */
+    queryPrefix: string;
     dtype: Env["EMBEDDING_DTYPE"];
     cacheDir: string;
     allowRemote: boolean;
@@ -58,6 +60,7 @@ export class AppConfig {
       provider: env.EMBEDDING_PROVIDER,
       modelId: env.EMBEDDING_MODEL_ID,
       dim: env.EMBEDDING_DIM,
+      queryPrefix: env.EMBEDDING_QUERY_PREFIX.trim(),
       dtype: env.EMBEDDING_DTYPE,
       cacheDir: fromRoot(env.EMBEDDING_CACHE_DIR),
       allowRemote: env.EMBEDDING_ALLOW_REMOTE,

@@ -44,6 +44,13 @@ export abstract class VectorStorePort {
    */
   abstract versions(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]>;
 
+  /**
+   * The best chunks of documents that amend or qualify the given ones (or that
+   * they amend or qualify), so a change to a policy is seen with the policy.
+   * Same filters as search.
+   */
+  abstract related(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]>;
+
   /** Upserts one document and its chunks in a single transaction. */
   abstract upsert(chunks: ChunkRecord[]): Promise<void>;
 

@@ -52,14 +52,18 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     `Time:      ${ctx.startedAt.toISOString()}`,
     `User:      ${ctx.user.id}  groups=[${ctx.user.groups.join(", ")}]`,
     `Question:  ${ctx.question}`,
-    `LLM:       ${ctx.llm.modelId} @ ${ctx.llm.baseUrl}`,
+    `Mode:      ${o.mode}${o.mode === "retrieval" ? " (best reranked chunk is the answer, no LLM)" : ""}`,
+    o.mode === "llm" ? `LLM:       ${ctx.llm.modelId} @ ${ctx.llm.baseUrl}` : `Reranker:  ${debug.rerank?.modelId ?? (o.rerank ? "not reached" : "off")}`,
     `Options:   topK=${o.topK} order=${o.orderBy} statuses=${(o.includeStatuses ?? ["current"]).join(",")} ` +
       `asOf=${o.asOf ?? "today"} minCosine=${o.minCosine ?? "none"} gateCosine=${o.gateCosine} ` +
-      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars} versionChunks=${o.versionChunks} ` +
+      `cosineMargin=${o.relativeCosineMargin} maxContextChars=${o.maxContextChars} versionChunks=${o.versionChunks} relatedChunks=${o.relatedChunks} ` +
       `rerank=${o.rerank ? `pool:${o.rerank.pool},min:${o.rerank.minScore}` : "off"}`,
     `Total:     ${(debug.totalMs / 1000).toFixed(1)} s`,
     "",
-    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> other versions -> resolve authority -> prompt -> LLM -> finalize -> answer`,
+    `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> ` +
+      (o.mode === "retrieval"
+        ? "best match -> answer"
+        : "related documents -> other versions -> resolve authority -> prompt -> LLM -> finalize -> answer"),
   );
 
   // 1. Embedding
@@ -117,14 +121,69 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
         : `Keep chunks with cosine >= best - margin = ${debug.bestCosine.toFixed(3)} - ${o.relativeCosineMargin} = ${floor.toFixed(3)}`,
       "",
     );
+    if (debug.rerank) {
+      out.push("Reranker order (whole pool):");
+      const ranked = [...debug.retrieved].sort((a, b) => debug.rerank!.scores[b.chunkId]! - debug.rerank!.scores[a.chunkId]!);
+      for (const [i, c] of ranked.entries()) {
+        const kept = debug.rerank.kept.includes(c);
+        const tag = !kept ? "cut (below top k)" : debug.offTopic.includes(c) ? "dropped (below min score)" : "kept";
+        out.push(
+          `  ${String(i + 1).padStart(2)}. rerank=${debug.rerank.scores[c.chunkId]!.toFixed(4)}  cosine=${fmtCos(c.cosine)}  ` +
+            `${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}]  ${tag}`,
+        );
+      }
+      out.push("");
+    }
     if (debug.offTopic.length === 0) out.push("Nothing dropped.");
     for (const c of debug.offTopic) {
       const score = debug.rerank ? `rerank=${debug.rerank.scores[c.chunkId]!.toFixed(4)}` : `cosine=${fmtCos(c.cosine)}`;
       out.push(`Dropped: ${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}] ${score}`);
     }
 
-    // 4b. Other versions of the documents found
-    out.push(step("4b", "ADD OTHER VERSIONS OF THE FILES FOUND", `${debug.versions.ms} ms, ${debug.versions.chunks.length} chunks`));
+    if (o.mode === "retrieval") {
+      // 5. Best match
+      out.push(step(5, "BEST MATCH (no LLM)"));
+      const b = debug.best;
+      if (b) {
+        const rr = debug.rerank?.scores[b.chunkId];
+        out.push(
+          "The best remaining chunk is returned verbatim as the answer: the highest reranked one,",
+          "except that a current version beats a higher-ranked old one unless the question asks about the past.",
+          "",
+          `${b.source.documentId} v${b.source.version}  "${b.source.title}"`,
+          `    section: ${b.source.sectionPath.join(" > ")}   chunk ${b.source.chunkIndex}`,
+          `    status=${b.status} from=${b.effectiveFrom} trust=${b.trust} role=${debug.evidence[0]?.role ?? "?"}`,
+          `    cosine=${fmtCos(b.cosine)}${rr === undefined ? "" : `  rerank=${rr.toFixed(4)}`}`,
+          `    why: ${debug.bestReason ?? ""}`,
+        );
+      }
+      if (answer.warnings.length > 0) out.push("", ...answer.warnings.map((w) => `! ${w}`));
+      out.push(step(6, "FINAL ANSWER"));
+      out.push(formatAnswer(answer), "");
+      return out.join("\n");
+    }
+
+    // 4b. Documents that amend or qualify the ones found
+    out.push(step("4b", "ADD RELATED DOCUMENTS (AMENDS / QUALIFIES)", `${debug.related.ms} ms, ${debug.related.chunks.length} chunks`));
+    out.push(
+      o.relatedChunks > 0
+        ? `For every file found, the best ${o.relatedChunks} chunk(s) of each document related to it by an authority relation, if this user can see it.`
+        : "Off (relatedChunks=0).",
+      "",
+    );
+    if (o.relatedChunks > 0 && debug.related.chunks.length === 0) out.push("No related documents visible.");
+    for (const c of debug.related.chunks) {
+      out.push(
+        `+  ${c.source.documentId} v${c.source.version}  "${c.source.title}"  status=${c.status} from=${c.effectiveFrom}`,
+        `     section: ${c.source.sectionPath.join(" > ")}   chunk ${c.source.chunkIndex}   cosine=${fmtCos(c.cosine)}`,
+        "     text:",
+        indent(c.text.trim(), "       "),
+        "",
+      );
+    }
+
+    // 4c. Other versions of the documents found or related
+    out.push(step("4c", "ADD OTHER VERSIONS OF THE FILES FOUND", `${debug.versions.ms} ms, ${debug.versions.chunks.length} chunks`));
     out.push(
       o.versionChunks > 0
         ? `For every file found, the best ${o.versionChunks} chunk(s) of each other version this user can see, by cosine to the question.`

@@ -1,20 +1,20 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { AppConfig } from "../../config/app-config.js";
 import { EmbeddingPort } from "../../ports/embedding.port.js";
+import { withExternalDataFallback } from "../external-data.js";
 
 /**
- * bge-v1.5 style embedder (bge-v1.5, snowflake-arctic-embed v1.5) running in-process on CPU through transformers.js (ONNX).
+ * CLS-pooled embedder (snowflake-arctic-embed v2.0 / v1.5, bge-v1.5) running in-process on CPU through transformers.js (ONNX).
  *
  * Chosen over an Ollama-hosted model so the assessed run path has one less
  * prerequisite process: `pnpm ingest` works with nothing but Node and Docker.
  *
  * Two details this model is fussy about, both handled here so no caller can
  * get them wrong:
- *   - CLS pooling, not mean. bge's own 1_Pooling/config.json sets
+ *   - CLS pooling, not mean. These models' 1_Pooling/config.json sets
  *     pooling_mode_cls_token: true. Mean pooling silently degrades recall.
- *   - Queries take an instruction prefix, documents take none.
+ *   - Queries take an instruction prefix (EMBEDDING_QUERY_PREFIX), documents take none.
  */
-const QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 
 const BATCH_SIZE = 16;
 
@@ -31,6 +31,7 @@ export class TransformersEmbeddingAdapter extends EmbeddingPort {
   readonly dim: number;
   readonly prefixScheme: string;
 
+  private readonly queryPrefix: string;
   private extractor: Extractor | null = null;
   private loading: Promise<Extractor> | null = null;
 
@@ -42,14 +43,16 @@ export class TransformersEmbeddingAdapter extends EmbeddingPort {
     super();
     this.modelId = config.embedding.modelId;
     this.dim = config.embedding.dim;
-    this.prefixScheme = `bge-v1.5:query-instruction;doc-raw;cls;l2;${config.embedding.dtype}`;
+    this.queryPrefix = config.embedding.queryPrefix ? `${config.embedding.queryPrefix} ` : "";
+    // The prefix text is part of the scheme: changing it makes stored vectors incomparable.
+    this.prefixScheme = `query:${JSON.stringify(this.queryPrefix)};doc-raw;cls;l2;${config.embedding.dtype}`;
     if (extractor) this.extractor = extractor;
   }
 
   async embed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
     if (texts.length === 0) return [];
 
-    const prepared = kind === "query" ? texts.map((t) => QUERY_PREFIX + t) : texts;
+    const prepared = kind === "query" ? texts.map((t) => this.queryPrefix + t) : texts;
     const extractor = await this.load();
     const out: number[][] = [];
 
@@ -90,10 +93,13 @@ export class TransformersEmbeddingAdapter extends EmbeddingPort {
         (this.config.embedding.allowRemote ? ", downloading if absent" : ", offline"),
     );
 
-    const pipe = await pipeline("feature-extraction", this.modelId, {
-      dtype: this.config.embedding.dtype,
-      device: "cpu",
-    });
+    const pipe = await withExternalDataFallback((extra) =>
+      pipeline("feature-extraction", this.modelId, {
+        dtype: this.config.embedding.dtype,
+        device: "cpu",
+        ...extra,
+      }),
+    );
 
     return pipe as unknown as Extractor;
   }

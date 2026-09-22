@@ -15,6 +15,7 @@ const valid = {
   EMBEDDING_PROVIDER: "transformers",
   EMBEDDING_MODEL_ID: "Xenova/bge-small-en-v1.5",
   EMBEDDING_DIM: "384",
+  EMBEDDING_QUERY_PREFIX: "query:",
   EMBEDDING_DTYPE: "fp32",
   EMBEDDING_CACHE_DIR: ".cache/models",
   EMBEDDING_ALLOW_REMOTE: "true",

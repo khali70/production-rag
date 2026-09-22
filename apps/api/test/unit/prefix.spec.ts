@@ -19,6 +19,7 @@ function makeConfig(dim = 384): AppConfig {
     AUTHORITY_FILE: "data/authority.yaml",
     EMBEDDING_MODEL_ID: "Xenova/bge-small-en-v1.5",
     EMBEDDING_DIM: dim,
+    EMBEDDING_QUERY_PREFIX: "Represent this sentence for searching relevant passages:",
     EMBEDDING_DTYPE: "fp32",
     EMBEDDING_CACHE_DIR: ".cache/models",
     EMBEDDING_ALLOW_REMOTE: false,
@@ -97,7 +98,18 @@ describe("bge prefix handling", () => {
 
   it("records the prefix convention in the index scheme, so a change is detectable", () => {
     const adapter = new TransformersEmbeddingAdapter(makeConfig(), fakeExtractor().fn as never);
-    expect(adapter.prefixScheme).toBe("bge-v1.5:query-instruction;doc-raw;cls;l2;fp32");
+    expect(adapter.prefixScheme).toBe(`query:"${QUERY_PREFIX}";doc-raw;cls;l2;fp32`);
+  });
+
+  it("uses no prefix when EMBEDDING_QUERY_PREFIX is empty", async () => {
+    const { fn, seen } = fakeExtractor();
+    const config = makeConfig();
+    const adapter = new TransformersEmbeddingAdapter(
+      { ...config, embedding: { ...config.embedding, queryPrefix: "" } } as AppConfig,
+      fn as never,
+    );
+    await adapter.embed(["q"], "query");
+    expect(seen[0]).toEqual(["q"]);
   });
 
   it("returns nothing for an empty input without calling the model", async () => {

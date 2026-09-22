@@ -3,10 +3,11 @@ import { AnswerModule } from "../answer/answer.module.js";
 import { CorpusModule } from "../corpus/corpus.module.js";
 import { EmbeddingModule } from "../embedding/embedding.module.js";
 import { GenerationModule } from "../generation/generation.module.js";
+import { RerankerModule } from "../reranker/reranker.module.js";
 import { AskController } from "./ask.controller.js";
 
 @Module({
-  imports: [AnswerModule, CorpusModule, EmbeddingModule, GenerationModule],
+  imports: [AnswerModule, CorpusModule, EmbeddingModule, GenerationModule, RerankerModule],
   controllers: [AskController],
 })
 export class HttpModule {}

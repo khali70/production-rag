@@ -11,6 +11,7 @@ import { AnswerService, type AskOptions } from "../modules/answer/answer.service
 import { EmbeddingPort } from "../ports/embedding.port.js";
 import { LlmPort } from "../ports/llm.port.js";
 import { formatAnswer, formatTrace } from "../modules/answer/ask.trace.js";
+import { RERANK_MIN_SCORE, RERANK_POOL } from "../modules/http/ask.request.js";
 
 /**
  * Ask a question end to end as a given user: embed, retrieve, gate, resolve
@@ -20,7 +21,10 @@ import { formatAnswer, formatTrace } from "../modules/answer/ask.trace.js";
  *
  *   node dist/cli/ask.js --user u-proc-310 "What is our process for approving a new enterprise vendor?"
  *   node dist/cli/ask.js --user u-proc-310 --trace-file traces/vendor.txt "vendor approval process"
- *   node dist/cli/ask.js --user u-proc-310 --rerank --rerank-pool 20 "who approves a 40k vendor"
+ *   node dist/cli/ask.js --user u-proc-310 --rerank-pool 20 "who approves a 40k vendor"
+ *   node dist/cli/ask.js --user u-proc-310 --mode llm --k 8 --no-rerank "who approves a 40k vendor"
+ *
+ * Default mode is retrieval: the reranker's best chunk is the answer, no LLM.
  *
  * The trace holds document text: it is for local debugging and is gitignored.
  */
@@ -29,18 +33,20 @@ async function main(): Promise<void> {
     allowPositionals: true,
     options: {
       user: { type: "string" },
+      mode: { type: "string", default: "retrieval" },
       k: { type: "string", default: "3" },
       order: { type: "string", default: "precedence" },
       statuses: { type: "string", default: "current,superseded,retired" },
       "version-chunks": { type: "string", default: "2" },
+      "related-chunks": { type: "string", default: "1" },
       "min-cosine": { type: "string" },
-      "gate-cosine": { type: "string", default: "0.3" },
-      "cosine-margin": { type: "string", default: "0.15" },
+      "gate-cosine": { type: "string", default: "0.4" },
+      "cosine-margin": { type: "string", default: "0.25" },
       "as-of": { type: "string" },
       "max-context-chars": { type: "string", default: "12000" },
-      rerank: { type: "boolean", default: false },
-      "rerank-pool": { type: "string", default: "5" },
-      "rerank-min": { type: "string", default: "0.1" },
+      "no-rerank": { type: "boolean", default: false },
+      "rerank-pool": { type: "string", default: String(RERANK_POOL) },
+      "rerank-min": { type: "string", default: String(RERANK_MIN_SCORE) },
       "trace-file": { type: "string", default: "traces/ask.txt" },
       quiet: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
@@ -50,7 +56,7 @@ async function main(): Promise<void> {
   const question = positionals.join(" ").trim();
   if (!values.user || question.length === 0) {
     throw new Error(
-      'Usage: ask --user <user_id> [--k 8] [--order relevance|precedence] [--statuses current,superseded,retired] [--version-chunks 2] [--min-cosine N] [--gate-cosine 0.3] [--cosine-margin 0.15] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--rerank] [--rerank-pool 20] [--rerank-min 0.1] [--trace-file path.txt] [--quiet] [--json] "question"',
+      `Usage: ask --user <user_id> [--mode retrieval|llm] [--k 3] [--order relevance|precedence] [--statuses current,superseded,retired] [--version-chunks 2] [--related-chunks 1] [--min-cosine N] [--gate-cosine 0.4] [--cosine-margin 0.25] [--as-of YYYY-MM-DD] [--max-context-chars 12000] [--no-rerank] [--rerank-pool ${RERANK_POOL}] [--rerank-min ${RERANK_MIN_SCORE}] [--trace-file path.txt] [--quiet] [--json] "question"`,
     );
   }
 
@@ -59,7 +65,9 @@ async function main(): Promise<void> {
     if (!check(n)) throw new Error(`--${name} is invalid: "${value}"`);
     return n;
   };
+  if (values.mode !== "retrieval" && values.mode !== "llm") throw new Error(`--mode is invalid: "${values.mode}"`);
   const options: AskOptions = {
+    mode: values.mode,
     topK: num("k", values.k, (n) => Number.isInteger(n) && n > 0),
     includeStatuses: values.statuses!.split(",") as Status[],
     minCosine:
@@ -70,7 +78,8 @@ async function main(): Promise<void> {
     relativeCosineMargin: num("cosine-margin", values["cosine-margin"], (n) => n >= 0 && n <= 2),
     maxContextChars: num("max-context-chars", values["max-context-chars"], (n) => Number.isInteger(n) && n > 0),
     versionChunks: num("version-chunks", values["version-chunks"], (n) => Number.isInteger(n) && n >= 0),
-    rerank: values.rerank
+    relatedChunks: num("related-chunks", values["related-chunks"], (n) => Number.isInteger(n) && n >= 0),
+    rerank: !values["no-rerank"]
       ? {
         pool: num("rerank-pool", values["rerank-pool"], (n) => Number.isInteger(n) && n > 0),
         minScore: num("rerank-min", values["rerank-min"], (n) => n >= 0 && n <= 1),
@@ -137,9 +146,19 @@ async function main(): Promise<void> {
             break;
           case "reranked":
             live(`kept ${d.rerank!.kept.length} (${d.rerank!.modelId}, ${d.rerank!.ms} ms)\n`);
+            for (const [i, c] of d.rerank!.kept.entries()) {
+              live(`      ${i + 1}. rerank=${d.rerank!.scores[c.chunkId]!.toFixed(4)} ${c.source.documentId} v${c.source.version} [${c.source.sectionPath.join(" > ")}]\n`);
+            }
+            break;
+          case "matched":
+            live(`[4] off-topic filter${options.rerank ? ` (rerank < ${options.rerank.minScore})` : ""}: dropped ${d.offTopic.length} chunk(s)\n`);
+            live(`[5] best match: ${d.best!.source.documentId} v${d.best!.source.version} [${d.best!.source.sectionPath.join(" > ")}]\n`);
+            break;
+          case "related":
+            if (options.relatedChunks > 0) live(`[4b] related documents: ${d.related.chunks.length} chunk(s) (${d.related.ms} ms)\n`);
             break;
           case "versions":
-            if (options.versionChunks > 0) live(`[4b] other versions: ${d.versions.chunks.length} chunk(s) (${d.versions.ms} ms)\n`);
+            if (options.versionChunks > 0) live(`[4c] other versions: ${d.versions.chunks.length} chunk(s) (${d.versions.ms} ms)\n`);
             break;
           case "resolved":
             live(`[4] off-topic filter${options.rerank ? ` (rerank < ${options.rerank.minScore})` : ""}: dropped ${d.offTopic.length} chunk(s)\n[5] authority:\n`);

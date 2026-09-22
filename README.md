@@ -51,17 +51,20 @@ Most RAG demos answer confidently. Enterprise RAG has to answer **correctly, for
 ```mermaid
 flowchart LR
     Q[Question + user id] --> I[Identity<br/>server-side groups]
-    I --> E[Embed query<br/>arctic-embed-m, CPU]
+    I --> E[Embed query<br/>arctic-embed-l v2, CPU]
     E --> S[Hybrid search<br/>vector + full-text, RRF<br/>ACL + lifecycle in SQL]
     S --> G{Evidence gate<br/>no LLM}
     G -- too weak --> R[Refuse safely]
-    G -- ok --> RR[Optional<br/>cross-encoder rerank]
-    RR --> VX[Other versions<br/>of each file found, same ACL]
+    G -- ok --> RR[Cross-encoder rerank<br/>pool 8 -> top 3]
+    RR -- default mode --> BM[Best match<br/>current version first,<br/>returned verbatim, no LLM]
+    RR -- llm mode --> RD[Related documents<br/>amends / qualifies, same ACL]
+    RD --> VX[Other versions<br/>of each file found, same ACL]
     VX --> A[Authority + precedence<br/>level, tier, relations, priority]
     A --> P[Prompt<br/>per file: current + old versions,<br/>priority list, untrusted data]
     P --> L[Local LLM<br/>plain-text answer]
     L --> V[Finalizer<br/>number checks, sources appended]
     V --> OUT[answered / qualified / refused]
+    BM --> OUT
 ```
 
 Order matters. Permissions are decided **before** retrieval, so even a fully fooled model cannot widen them.
@@ -71,9 +74,10 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 - **Permission-consistent by construction.** Identity is resolved server-side from the pack's `identities.json`; `allowed_groups`, classification rules and `deny_groups` are enforced inside the SQL query, default deny.
 - **Authority, not just relevance.** A reviewed [`data/authority.yaml`](data/authority.yaml) assigns each document a tier and org level, backed by quotes that are re-verified against the document text at every ingest. A quote that drifts fails the ingest.
 - **Old and current side by side.** Search covers every status the user may see. For each file found, the best chunks of its other versions are added, and the prompt groups them per file: the current version first, then the old ones marked `state="old"`. Every version carries a priority (1 wins) decided in code, repeated as a list right before the question, so the model can say "previously X, replaced by v3.0" without ever answering from a retired rule. A number that only an old version contains, stated as current, downgrades the answer.
+- **Changes travel with what they change.** When search finds a policy, the documents that amend or qualify it (per the authority relations, e.g. the approval matrix and the legal memo for the vendor policy) are added too, filtered by the same ACL. A matrix whose wording scores lower than the policy's still reaches the model.
 - **Prompt-injection resistant.** [`injection.scanner.ts`](apps/api/src/modules/corpus/injection.scanner.ts) flags instruction-like content at ingest; flagged docs are forced to `unverified` and can never override policy.
-- **Refuses without hallucinating.** A deterministic evidence gate refuses before any LLM call when nothing trustworthy is visible.
-- **Plain-text answers, sources from code.** The LLM writes a short text answer; the finalizer appends the exact documents it was given (id, version, section, role) and flags unsupported numbers.
+- **Refuses without hallucinating.** A deterministic evidence gate (best cosine below 0.40) returns nothing before any reranker or LLM call when nothing trustworthy is visible. A reply containing the refusal sentence anywhere is marked refused.
+- **Plain-text answers, sources from code.** The LLM writes a short text answer; the finalizer appends the exact documents it was given (id, version, section, role) and flags unsupported numbers (digits, dates without leading zeros, `50k` shorthand and spelled-out numbers like "one hundred and fifty thousand").
 - **Supply-chain integrity.** Pack files are checked against `checksums.sha256` before ingest.
 - **Hexagonal architecture.** Ports for embeddings, reranker, LLM and vector store with real and fake adapters, so every stage is testable offline and swappable (e.g. Azure OpenAI + Azure AI Search in production).
 - **Fully offline, CPU only.** See [Offline CPU models](#offline-cpu-models). In-process ONNX embeddings via `@huggingface/transformers`, Postgres + pgvector in Docker, any OpenAI-compatible local LLM (Ollama, llama.cpp, vLLM).
@@ -84,9 +88,9 @@ Order matters. Permissions are decided **before** retrieval, so even a fully foo
 |---|---|
 | API | NestJS 12 (ESM), TypeScript 6 |
 | Vector store | Postgres 17 + pgvector 0.8 (hybrid vector + full-text) |
-| Embeddings | `Snowflake/snowflake-arctic-embed-m-v1.5` (768d), in-process ONNX |
-| Reranker (optional) | `Xenova/bge-reranker-base` cross-encoder |
-| LLM | Any OpenAI-compatible endpoint, default `qwen3.5:0.8b-mlx` on Ollama |
+| Embeddings | `Snowflake/snowflake-arctic-embed-l-v2.0` (1024d, q8), in-process ONNX |
+| Reranker | `onnx-community/bge-reranker-v2-m3-ONNX` cross-encoder (q8) |
+| LLM | Any OpenAI-compatible endpoint, default `qwen3.5:4b` (8K context) on Ollama |
 | Config | `@nestjs/config` + zod, fail-fast validation |
 | Tests | Vitest (unit + pgvector contract tests) |
 
@@ -96,30 +100,30 @@ Every model runs on your machine, on CPU. No GPU, no API key, no cloud account. 
 
 | Role | Model | Runtime | Size on disk | Why this one |
 |---|---|---|---|---|
-| Embeddings | [`Snowflake/snowflake-arctic-embed-m-v1.5`](https://huggingface.co/Snowflake/snowflake-arctic-embed-m-v1.5) (768d, fp32) | In-process ONNX via `@huggingface/transformers` | ~420 MB | Strong retrieval quality for its size, CLS pooling + query instruction, no extra server to run |
-| Reranker (optional) | [`Xenova/bge-reranker-base`](https://huggingface.co/Xenova/bge-reranker-base) (q8) | In-process ONNX | ~280 MB | Cross-encoder for sharper ordering when `--rerank` is on, loaded only on first use |
-| Answer LLM | [`qwen3.5:0.8b-mlx`](https://ollama.com/library/qwen3.5) (0.8B params) | [Ollama](https://ollama.com), OpenAI-compatible API | ~1.2 GB | MLX build, Apple Silicon only (elsewhere use `qwen3.5:0.8b`). Fastest option (about 10-20 s per answer on an M1), Apache 2.0 license. `qwen3.5:4b` gives more careful answers at about 30 s |
+| Embeddings | [`Snowflake/snowflake-arctic-embed-l-v2.0`](https://huggingface.co/Snowflake/snowflake-arctic-embed-l-v2.0) (1024d, q8) | In-process ONNX via `@huggingface/transformers` | ~570 MB | Large retrieval model, CLS pooling + `query:` prefix. Separates questions the documents cannot answer: with a 0.40 cosine gate all 4 off-document test questions return nothing and no answerable one is lost except one short phrasing (C1b) |
+| Reranker | [`bge-reranker-v2-m3`](https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX) (q8) | In-process ONNX | ~570 MB | Strong cross-encoder; ranks the 8 search results and its best chunk is the default answer. Put the right chunk first for 36 of 48 answerable test questions (41 of 48 within its top 3). Still weak on the approval matrix table and contract SLA wording. About 7 s per question on an M1 |
+| Answer LLM | [`qwen3.5:4b`](https://ollama.com/library/qwen3.5) (4B params) | [Ollama](https://ollama.com), OpenAI-compatible API | ~3.4 GB | Passed 49 of the pack's 52 test questions (checked against the documents, no permission leaks), Apache 2.0 license. About 20-90 s per answer on an M1. `qwen3.5:0.8b-mlx` (~1.2 GB) is 3-5x faster but passed 10 of 52: it loops, copies prompt templates and misreads tables |
 
 ### Set up the models once
 
 The embedding and reranker models download automatically on first use into `.cache/models`. The LLM comes from Ollama:
 
 ```bash
-ollama pull qwen3.5:0.8b-mlx
+ollama pull qwen3.5:4b
 ```
 
 Optional: give the model an 8K context window so larger evidence sets fit. Create a file named `Modelfile` with:
 
 ```
-FROM qwen3.5:0.8b-mlx
+FROM qwen3.5:4b
 PARAMETER num_ctx 8192
 ```
 
 ```bash
-ollama create qwen3.5-0.8b-8k -f Modelfile
+ollama create qwen3.5-4b-8k -f Modelfile
 ```
 
-Then set `LLM_MODEL_ID=qwen3.5-0.8b-8k` in `.env`.
+Then set `LLM_MODEL_ID=qwen3.5-4b-8k` in `.env`.
 
 ### Go fully offline
 
@@ -141,16 +145,24 @@ Apple M1, 16 GB RAM, CPU only, question *"What is our process for approving a ne
 |---|---|
 | Query embedding | ~1.4 s |
 | Hybrid search (pgvector) | ~0.1 s |
-| LLM answer (879 tokens in, 360 out) | ~104 s |
+| Rerank 8 chunks (default best-chunk mode ends here) | ~7 s |
+| LLM answer, `mode: "llm"` only (879 tokens in, 360 out) | ~104 s |
 
-Refusals are fast: when no permitted evidence passes the gate, the LLM is never called and the answer returns in under 2 s.
+Refusals are fast: when no permitted evidence passes the gate, neither the reranker nor the LLM is called and the answer returns in under 2 s.
+
+### Answer modes
+
+- **`retrieval` (default):** search returns 8 chunks, the reranker keeps the top 3 (score >= 0.005), and the best one is returned verbatim with its source. A current version beats a higher-ranked old one, unless the question asks about the past ("old", "previous", "replaced"...). A retired or low-trust best match is marked `qualified`. No LLM call.
+- **`llm`:** the chunks, related documents and other versions become a prompt and the LLM writes the answer (send `"mode": "llm"`, typically with `"k": 8, "rerank": null`).
+
+Every request writes a full trace to `traces/web-<time>-<user>.txt` and one summary block to the server log: the reranker's top 3 with scores, which one was returned and why.
 
 ### Swap models
 
 Models are behind ports, so switching is a config change:
 
 - **Another local LLM:** any OpenAI-compatible server (llama.cpp, LM Studio, vLLM). Set `LLM_BASE_URL` and `LLM_MODEL_ID`.
-- **Another embedding model:** set `EMBEDDING_MODEL_ID` and `EMBEDDING_DIM`, then run `pnpm ingest --reindex`. The index records the model, dim, dtype and prefix scheme, and search refuses to run against a mismatched index instead of returning quietly wrong results.
+- **Another embedding model:** set `EMBEDDING_MODEL_ID`, `EMBEDDING_DIM` and `EMBEDDING_QUERY_PREFIX`, add a migration if the dim changes, then run `pnpm ingest --reindex`. fp32 exports over 2 GB keep weights in `model.onnx_data`; the adapters fetch it automatically. The index records the model, dim, dtype and prefix scheme, and search refuses to run against a mismatched index instead of returning quietly wrong results.
 - **Hosted in production:** point the same adapter at Azure OpenAI.
 
 ## Quick start
@@ -170,7 +182,7 @@ cp .env.example .env
 ```
 
 ```bash
-ollama pull qwen3.5:0.8b-mlx
+ollama pull qwen3.5:4b
 ```
 
 ```bash
@@ -185,7 +197,7 @@ pnpm build && pnpm migrate && pnpm ingest
 pnpm --filter api start
 ```
 
-Open **http://localhost:3001/**, pick a user, ask a question. The first run downloads the embedding model (~440 MB) into `.cache/models`; set `EMBEDDING_ALLOW_REMOTE=false` afterwards for fully offline runs.
+Open **http://localhost:3001/**, pick a user, ask a question. The first run downloads the embedding model and the reranker (~570 MB each) into `.cache/models`; set `EMBEDDING_ALLOW_REMOTE=false` afterwards for fully offline runs.
 
 ### CLI
 

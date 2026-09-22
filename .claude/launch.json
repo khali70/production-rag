@@ -4,8 +4,9 @@
     {
       "name": "rag-api",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd apps/api && PORT=3011 node dist/main.js"],
-      "port": 3011
+      "runtimeArgs": ["-c", "cd apps/api && node dist/main.js"],
+      "port": 3011,
+      "autoPort": true
     }
   ]
 }

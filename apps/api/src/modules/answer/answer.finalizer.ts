@@ -1,3 +1,4 @@
+import type { ScoredChunk } from "../../domain/types.js";
 import type { Answer, Source } from "./answer.types.js";
 import type { EvidenceDoc } from "./evidence.resolver.js";
 
@@ -7,14 +8,44 @@ export const REFUSAL = "I could not find the answer in the documents you have ac
 /** Digits with thousands separators or decimals: 100,000 / 2.5 / 2026-07-01 -> 2026, 07, 01. */
 const NUMBER = /\d+(?:[.,]\d+)*/g;
 
-/** Canonical form: "100,000" and "100000" compare equal; trailing sentence dot dropped. */
+/**
+ * Canonical form: "100,000" and "100000" compare equal, the trailing sentence
+ * dot is dropped, and leading zeros go, so "2026-07-01" and "July 1" share the 1.
+ */
 function normalizeNumber(n: string): string {
-  return n.replace(/,(?=\d{3}\b)/g, "").replace(/\.$/, "");
+  const plain = n.replace(/,(?=\d{3}\b)/g, "").replace(/\.$/, "");
+  return /^\d+$/.test(plain) ? String(Number(plain)) : plain;
+}
+
+const UNITS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19,
+  twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90,
+};
+const SCALES: Record<string, number> = { thousand: 1e3, million: 1e6, billion: 1e9 };
+const NUMBER_WORD = `(?:${[...Object.keys(UNITS), "hundred", ...Object.keys(SCALES)].join("|")})`;
+const WORD_RUN = new RegExp(`\\b${NUMBER_WORD}(?:[\\s-]+(?:and[\\s-]+)?${NUMBER_WORD})*\\b`, "gi");
+
+/** "one hundred and fifty thousand" -> 150000, "five" -> 5, "hundred-thousand" -> 100000. */
+function wordsToDigits(text: string): string {
+  return text.replace(WORD_RUN, (run) => {
+    let total = 0;
+    let current = 0;
+    for (const w of run.toLowerCase().split(/[\s-]+/)) {
+      if (w === "and") continue;
+      if (w === "hundred") current = (current || 1) * 100;
+      else if (w in SCALES) {
+        total += (current || 1) * SCALES[w]!;
+        current = 0;
+      } else current += UNITS[w]!;
+    }
+    return String(total + current);
+  });
 }
 
 function numbersIn(text: string): string[] {
   // Evidence ids like C3 are not facts.
-  const cleaned = text.replace(/\bC\d+\b/g, " ");
+  const cleaned = wordsToDigits(text).replace(/\bC\d+\b/g, " ");
   return (cleaned.match(NUMBER) ?? []).map(normalizeNumber);
 }
 
@@ -69,8 +100,12 @@ export function finalizeAnswer(reply: string, docs: EvidenceDoc[], ctx: Finalize
   if (text.length === 0) {
     return { status: "refused", text: REFUSAL, message: REFUSAL, sources: [], warnings: ["model returned no text"] };
   }
-  if (text.toLowerCase().startsWith(REFUSAL.slice(0, 30).toLowerCase())) {
-    return { status: "refused", text, message: text, sources: [], warnings: [] };
+  // The refusal sentence anywhere means the documents did not answer, even
+  // when the model wrote other text around it first.
+  const refusalAt = text.toLowerCase().indexOf(REFUSAL.slice(0, 30).toLowerCase());
+  if (refusalAt >= 0) {
+    const mixed = refusalAt > 0 ? ["reply mixes text with the refusal sentence: treated as refused"] : [];
+    return { status: "refused", text, message: text, sources: [], warnings: mixed };
   }
 
   // Numbers may come from the evidence text, its metadata (ids, versions,
@@ -111,5 +146,57 @@ export function finalizeAnswer(reply: string, docs: EvidenceDoc[], ctx: Finalize
     message: `${text}\n\n${formatSources(sources)}`,
     sources,
     warnings,
+  };
+}
+
+/** A question about how things used to be: an old version may be the right answer. */
+const ASKS_HISTORY = /\b(old|older|previous(ly)?|before|former(ly)?|replace[ds]?|used to|earlier|retired|superseded|history|originally)\b/i;
+
+/**
+ * retrieval mode: picks the answer from the reranked chunks, best first. The
+ * reranker scores wording, not validity, and a retired version often words the
+ * same rule more plainly than its replacement. So the first chunk from a
+ * current version wins, unless the question asks about the past.
+ */
+export function pickBestMatch(chunks: ScoredChunk[], question: string): { chunk: ScoredChunk; reason: string } {
+  const top = chunks[0]!;
+  if (top.status === "current") return { chunk: top, reason: "highest reranked chunk, current version" };
+  if (ASKS_HISTORY.test(question)) return { chunk: top, reason: `highest reranked chunk; ${top.status} version kept because the question asks about the past` };
+  const current = chunks.find((c) => c.status === "current");
+  if (!current) return { chunk: top, reason: `highest reranked chunk; no current version among the top ${chunks.length}` };
+  return {
+    chunk: current,
+    reason: `rank ${chunks.indexOf(current) + 1}: the first current version, preferred over higher-ranked ${top.status} ${top.source.documentId} v${top.source.version}`,
+  };
+}
+
+/**
+ * retrieval mode: the best chunk is the answer, verbatim. Nothing is
+ * generated, so there is nothing to number-check; the answer is only
+ * downgraded when the chunk is not the rule in force or its document is low
+ * trust. A contract or case record is a fine answer to a question about it.
+ */
+export function bestMatchAnswer(chunk: ScoredChunk, doc: EvidenceDoc, rerankScore: number | null): Answer {
+  const text = chunk.text.trim();
+  const warnings: string[] = [];
+  if (chunk.status !== "current") warnings.push(`best match is from a ${chunk.status} version: not the rule in force`);
+  if (chunk.trust === "low") warnings.push("best match is from a low-trust document: verify before relying on it");
+
+  const sources: Source[] = [{ id: doc.id, role: doc.role, source: chunk.source }];
+  return {
+    status: warnings.length > 0 ? "qualified" : "answered",
+    text,
+    message: `${text}\n\n${formatSources(sources)}`,
+    sources,
+    warnings,
+    match: {
+      chunkId: chunk.chunkId,
+      source: chunk.source,
+      status: chunk.status,
+      effectiveFrom: chunk.effectiveFrom,
+      role: doc.role,
+      rerankScore,
+      cosine: chunk.cosine,
+    },
   };
 }

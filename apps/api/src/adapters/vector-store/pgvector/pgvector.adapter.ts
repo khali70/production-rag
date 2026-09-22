@@ -20,7 +20,7 @@ import {
   VectorStorePort,
 } from "../../../ports/vector-store.port.js";
 import { PgPool } from "./pg.pool.js";
-import { VERSIONS_SQL, buildSearchSql } from "./search.sql.js";
+import { RELATED_SQL, VERSIONS_SQL, buildSearchSql } from "./search.sql.js";
 
 type ChunkRow = {
   chunk_id: string;
@@ -120,6 +120,14 @@ export class PgVectorStoreAdapter extends VectorStorePort {
   }
 
   async versions(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]> {
+    return this.perVersion(VERSIONS_SQL, scope, q);
+  }
+
+  async related(scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]> {
+    return this.perVersion(RELATED_SQL, scope, q);
+  }
+
+  private async perVersion(sql: string, scope: AccessScope, q: VersionQuery): Promise<ScoredChunk[]> {
     if (!scope || !Array.isArray(scope.groups) || scope.groups.length === 0) {
       throw new MissingScopeError();
     }
@@ -127,7 +135,7 @@ export class PgVectorStoreAdapter extends VectorStorePort {
 
     return this.db.transaction(async (client) => {
       await this.assertIndexMatches(client);
-      const { rows } = await client.query<ChunkRow>(VERSIONS_SQL, [
+      const { rows } = await client.query<ChunkRow>(sql, [
         pgvector.toSql(q.embedding),
         q.documentIds,
         scope.groups,

@@ -23,4 +23,11 @@ export class SearchStage implements PipelineStage<SearchInput, Searched> {
     const chunks = await this.store.versions(scope, query);
     return { chunks, ms: Date.now() - started };
   }
+
+  /** Documents that amend or qualify the ones already found, e.g. a matrix that changes a policy's thresholds. */
+  async related(scope: AccessScope, query: VersionQuery): Promise<Searched> {
+    const started = Date.now();
+    const chunks = await this.store.related(scope, query);
+    return { chunks, ms: Date.now() - started };
+  }
 }

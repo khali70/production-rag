@@ -31,6 +31,12 @@ export const envSchema = z.object({
   EMBEDDING_PROVIDER: z.enum(["transformers", "fake"]),
   EMBEDDING_MODEL_ID: z.string().min(1),
   EMBEDDING_DIM: z.coerce.number().int().positive(),
+  /**
+   * Instruction put before every query (never before documents), joined with one space.
+   * Model specific: "query:" for snowflake-arctic-embed v2.0, "Represent this sentence for
+   * searching relevant passages:" for bge-v1.5 / arctic v1.5. Empty for models without one.
+   */
+  EMBEDDING_QUERY_PREFIX: z.string(),
   EMBEDDING_DTYPE: z.enum(["fp32", "fp16", "q8", "int8", "uint8", "q4"]),
   EMBEDDING_CACHE_DIR: z.string().min(1),
   EMBEDDING_ALLOW_REMOTE: bool,

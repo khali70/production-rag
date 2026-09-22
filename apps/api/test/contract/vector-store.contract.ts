@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import type { EmbeddingPort } from "../../src/ports/embedding.port.js";
+import type { Status } from "../../src/domain/types.js";
 import {
   IndexMismatchError,
   MissingScopeError,
@@ -213,6 +214,48 @@ export function describeVectorStoreContract(
         skipVersions: ["POL@3.0"],
         perVersion: 2,
         includeStatuses: ["current", "retired"],
+      });
+      expect(found).toEqual([]);
+    });
+
+    it("returns documents that amend or qualify a found one, in both directions, never superseded versions", async () => {
+      await harness.store.upsert([
+        makeChunk({ documentId: "POL", version: "3.0", relations: [{ kind: "supersedes", documentId: "POL", version: "2.1" }] }),
+      ]);
+      await harness.store.upsert([makeChunk({ documentId: "POL", version: "2.1", status: "retired" })]);
+      await harness.store.upsert([
+        makeChunk({ documentId: "MTX", relations: [{ kind: "amends", documentId: "POL", version: "3.0", scope: "thresholds" }] }),
+      ]);
+      await harness.store.upsert([
+        makeChunk({ documentId: "MEM", relations: [{ kind: "qualifies", documentId: "POL", version: "3.0", scope: "legal" }] }),
+      ]);
+      await harness.store.upsert([makeChunk({ documentId: "UNRELATED" })]);
+
+      const query = { embedding: unitVector(0), skipVersions: [], perVersion: 1, includeStatuses: ["current", "retired"] as Status[] };
+      const fromPolicy = await harness.store.related(PROCUREMENT, { ...query, documentIds: ["POL"] });
+      expect(fromPolicy.map((c) => c.source.documentId).sort()).toEqual(["MEM", "MTX"]);
+
+      // Reverse direction: the matrix names the policy it amends.
+      const fromMatrix = await harness.store.related(PROCUREMENT, { ...query, documentIds: ["MTX"] });
+      expect(fromMatrix.map((c) => c.source.documentId)).toEqual(["POL"]);
+    });
+
+    it("never returns a related document the user may not see", async () => {
+      await harness.store.upsert([makeChunk({ documentId: "POL", version: "3.0" })]);
+      await harness.store.upsert([
+        makeChunk({
+          documentId: "CASE",
+          relations: [{ kind: "qualifies", documentId: "POL", version: "3.0", scope: "x" }],
+          allowedGroups: ["hr_investigations"],
+          classification: "RESTRICTED_HR_INVESTIGATION",
+          classificationGroups: ["hr_investigations"],
+        }),
+      ]);
+      const found = await harness.store.related(ENGINEER, {
+        embedding: unitVector(0),
+        documentIds: ["POL"],
+        skipVersions: ["POL@3.0"],
+        perVersion: 1,
       });
       expect(found).toEqual([]);
     });

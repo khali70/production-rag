@@ -150,19 +150,30 @@
       <textarea id="question" required placeholder="Who approves a new enterprise vendor?"></textarea>
     </label>
 
+    <h2>Answer</h2>
+    <div class="field">
+      <div class="lbl">Mode</div>
+      <div class="seg">
+        <label><input type="radio" name="mode" value="retrieval" checked><span>best chunk</span></label>
+        <label><input type="radio" name="mode" value="llm"><span>LLM</span></label>
+      </div>
+      <div class="hint">Best chunk: the reranker's top chunk is the answer, no LLM. LLM: the chunks become a prompt.</div>
+    </div>
+
     <h2>Retrieval</h2>
     <label class="field">
       <div class="lbl">Top k <output id="kOut"></output></div>
       <input type="range" id="k" min="1" max="20" step="1" value="3">
+      <div class="hint">Chunks kept after reranking. In best-chunk mode the first one is returned.</div>
     </label>
     <label class="field">
       <div class="lbl">Gate cosine <output id="gateCosineOut"></output></div>
-      <input type="range" id="gateCosine" min="0" max="1" step="0.01" value="0.3">
+      <input type="range" id="gateCosine" min="0" max="1" step="0.01" value="0.4">
       <div class="hint">Refuse without calling the LLM when the best cosine is below this.</div>
     </label>
     <label class="field">
       <div class="lbl">Cosine margin <output id="cosineMarginOut"></output></div>
-      <input type="range" id="cosineMargin" min="0" max="1" step="0.01" value="0.15">
+      <input type="range" id="cosineMargin" min="0" max="1" step="0.01" value="0.25">
       <div class="hint">Drop chunks this far below the best cosine. Ignored with rerank.</div>
     </label>
     <label class="field">
@@ -194,18 +205,24 @@
       <input type="range" id="versionChunks" min="0" max="5" step="1" value="2">
       <div class="hint">For each file found, also send this many chunks of each of its other versions. 0 = off.</div>
     </label>
+    <label class="field">
+      <div class="lbl">Related documents per file <output id="relatedChunksOut"></output></div>
+      <input type="range" id="relatedChunks" min="0" max="5" step="1" value="1">
+      <div class="hint">For each file found, also send this many chunks of each document that amends or qualifies it (e.g. a matrix changing a policy). 0 = off.</div>
+    </label>
 
     <h2>Rerank</h2>
-    <label class="field check"><input type="checkbox" id="rerankOn"> Cross-encoder rerank</label>
-    <div class="sub" id="rerankBox" hidden>
+    <label class="field check"><input type="checkbox" id="rerankOn" checked> Cross-encoder rerank</label>
+    <div class="sub" id="rerankBox">
       <label class="field">
         <div class="lbl">Pool <output id="rerankPoolOut"></output></div>
-        <input type="range" id="rerankPool" min="1" max="50" step="1" value="20">
+        <input type="range" id="rerankPool" min="1" max="50" step="1" value="8">
         <div class="hint">Candidates fetched before reranking. Never below k.</div>
       </label>
       <label class="field">
         <div class="lbl">Min score <output id="rerankMinOut"></output></div>
-        <input type="range" id="rerankMin" min="0" max="1" step="0.01" value="0.1">
+        <input type="range" id="rerankMin" min="0" max="1" step="0.005" value="0.005">
+        <div class="hint">Chunks the reranker scores below this are dropped. None left = no answer.</div>
       </label>
     </div>
 
@@ -234,15 +251,15 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (n, d = 3) => (n === null || n === undefined ? "n/a" : Number(n).toFixed(d));
-const STORE = "ask-playground-v2";
+const STORE = "ask-playground-v5";
 let users = [];
 
 // ---- sliders ----
-const sliders = ["k", "gateCosine", "cosineMargin", "minCosine", "versionChunks", "rerankPool", "rerankMin"];
+const sliders = ["k", "gateCosine", "cosineMargin", "minCosine", "versionChunks", "relatedChunks", "rerankPool", "rerankMin"];
 function syncOutputs() {
   for (const id of sliders) {
     const el = $(id);
-    $(id + "Out").textContent = el.step === "1" ? el.value : Number(el.value).toFixed(2);
+    $(id + "Out").textContent = el.step === "1" ? el.value : Number(el.value).toFixed(el.step.length - 2);
   }
   $("minCosineOut").style.opacity = $("minCosineOn").checked ? 1 : 0.4;
   // Rerank pool can never be smaller than k.
@@ -291,7 +308,7 @@ async function boot() {
     const [uRes, iRes] = await Promise.all([fetch("/api/users"), fetch("/api/info")]);
     users = await uRes.json();
     const info = await iRes.json();
-    $("models").textContent = `embed: ${info.embedding.modelId} (${info.embedding.dim}d)  |  llm: ${info.llm.modelId}`;
+    $("models").textContent = `embed: ${info.embedding.modelId} (${info.embedding.dim}d)  |  rerank: ${info.reranker.modelId}  |  llm: ${info.llm.modelId}`;
     $("userId").innerHTML = '<option value="">choose a user</option>' + users
       .map((u) => `<option value="${esc(u.userId)}">${esc(u.userId)}${u.displayName ? " - " + esc(u.displayName) : ""} (${esc(u.department)})</option>`)
       .join("");
@@ -309,6 +326,7 @@ function body() {
   return {
     userId: $("userId").value,
     question: $("question").value,
+    mode: document.querySelector('input[name=mode]:checked').value,
     k: +$("k").value,
     order: document.querySelector('input[name=order]:checked').value,
     statuses: statuses.length ? statuses : ["current"],
@@ -318,6 +336,7 @@ function body() {
     asOf: $("asOf").value || null,
     maxContextChars: +$("maxContextChars").value,
     versionChunks: +$("versionChunks").value,
+    relatedChunks: +$("relatedChunks").value,
     rerank: $("rerankOn").checked ? { pool: +$("rerankPool").value, minScore: +$("rerankMin").value } : null,
   };
 }
@@ -332,7 +351,8 @@ $("form").addEventListener("submit", async (ev) => {
   clearInterval(timer);
   timer = setInterval(() => {
     const w = $("wait");
-    if (w) w.textContent = `Working... ${Math.round((Date.now() - started) / 1000)} s (embed, search, LLM)`;
+    const steps = document.querySelector('input[name=mode]:checked').value === "llm" ? "embed, search, LLM" : "embed, search, rerank";
+    if (w) w.textContent = `Working... ${Math.round((Date.now() - started) / 1000)} s (${steps})`;
   }, 500);
   try {
     const res = await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body()) });
@@ -364,11 +384,12 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
   const llmMs = d.generations.reduce((s, g) => s + g.latencyMs, 0);
   const dropped = new Set(d.offTopic);
   const rr = d.rerank?.scores ?? {};
-  const rows = [...d.retrieved, ...d.versions.chunks];
+  const rows = [...d.retrieved, ...d.related.chunks, ...d.versions.chunks];
 
   $("out").innerHTML = `
     <div class="panel">
       <span class="badge ${esc(a.status)}">${esc(a.status)}</span>
+      ${a.match ? matchHead({ ...a.match, reason: d.bestReason }) : ""}
       <div class="message">${esc(a.text)}</div>
       ${a.sources.length ? `<h2>Sources</h2>${sourceList(a.sources)}` : ""}
       ${a.warnings.length ? `<h2>Warnings</h2>${a.warnings.map((w) => `<div class="note">${esc(w)}</div>`).join("")}` : ""}
@@ -394,9 +415,11 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
       ${d.retrieved.length === 0 && $("minCosineOn").checked ? `<div class="note">Min cosine is on (${(+$("minCosine").value).toFixed(2)}). The SQL floor drops every chunk below it, so nothing reached the gate. Lower it or turn it off.</div>` : ""}
     </div>
 
+    ${rerankPanel(d)}
+
     ${embeddingPanel(d.embedding)}
 
-    ${d.evidence.length ? `
+    ${d.evidence.length && d.mode === "llm" ? `
     <div class="panel">
       <h2>Evidence sent to the LLM</h2>
       <div class="tablewrap"><table>
@@ -406,7 +429,7 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
     </div>` : ""}
 
     <div class="panel">
-      <h2>Retrieved chunks (${d.retrieved.length}${d.versions.chunks.length ? ` + ${d.versions.chunks.length} from other versions` : ""})</h2>
+      <h2>Retrieved chunks (${d.retrieved.length}${d.related.chunks.length ? ` + ${d.related.chunks.length} from related documents` : ""}${d.versions.chunks.length ? ` + ${d.versions.chunks.length} from other versions` : ""})</h2>
       <div class="hint" style="margin-bottom:6px">Click a row to see the chunk text. Struck-through rows were dropped as off-topic. Rows marked + are other versions of the files found.</div>
       <div class="tablewrap"><table>
         <tr><th>#</th><th>chunk</th><th>title</th><th>section</th><th>cosine</th><th>rrf</th>${d.rerank ? "<th>rerank</th>" : ""}<th>tier</th><th>lvl</th><th>status</th></tr>
@@ -430,6 +453,38 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
       <details><summary>Full API response</summary><pre>${esc(JSON.stringify({ answer: a, diagnostics: { ...d, embedding: { ...d.embedding, vector: `[${d.embedding.vector.length} values]` } } }, null, 2))}</pre></details>
     </div>`;
   wire(d);
+}
+
+// ---- best match + reranker ranking ----
+function matchHead(m) {
+  const s = m.source;
+  return `<h2>Best match</h2>
+    <div class="hint">${esc(s.title)} (${esc(s.documentId)} v${esc(s.version)}${s.sectionPath?.length ? ", " + esc(s.sectionPath.join(" > ")) : ""})
+    | ${esc(m.status)} from ${esc(m.effectiveFrom)} | ${esc(m.role)} | rerank ${fmt(m.rerankScore, 4)} | cosine ${fmt(m.cosine)}</div>
+    ${m.reason ? `<div class="hint">why: ${esc(m.reason)}</div>` : ""}`;
+}
+
+function rerankPanel(d) {
+  if (!d.rerank) return "";
+  const s = d.rerank.scores;
+  const kept = new Set(d.rerank.kept);
+  const dropped = new Set(d.offTopic);
+  const order = d.retrieved.map((c, i) => [c, i]).sort(([a], [b]) => s[b.chunkId] - s[a.chunkId]);
+  const tag = (c) => c.chunkId === d.best ? "answer" : !kept.has(c.chunkId) ? "cut: below top k" : dropped.has(c.chunkId) ? "dropped: below min score" : "kept";
+  return `
+    <div class="panel">
+      <h2>Reranker | ${esc(d.rerank.modelId)} | ${d.rerank.ms} ms | pool ${d.retrieved.length} -> top ${d.rerank.kept.length}</h2>
+      <div class="hint" style="margin-bottom:6px">Whole search pool, in reranker order. Click a row to see the chunk text.</div>
+      <div class="tablewrap"><table>
+        <tr><th>#</th><th>rerank</th><th>cosine</th><th>document</th><th>section</th><th>status</th><th>result</th></tr>
+        ${order.map(([c, i], r) => `
+          <tr class="chunk ${kept.has(c.chunkId) && !dropped.has(c.chunkId) ? "" : "dropped"}" data-i="${i}">
+            <td>${r + 1}</td><td class="num">${fmt(s[c.chunkId], 4)}</td><td class="num">${fmt(c.cosine)}</td>
+            <td>${esc(c.documentId)} v${esc(c.version)}</td><td>${esc(c.section)}</td><td>${esc(c.status)}</td>
+            <td>${c.chunkId === d.best ? "<b>answer</b>" : esc(tag(c))}</td>
+          </tr>`).join("")}
+      </table></div>
+    </div>`;
 }
 
 // ---- embedding panel ----
@@ -490,7 +545,8 @@ function drawHeat(v) {
 function llmPanel(d) {
   const L = d.llm;
   if (!L.prompt) {
-    return `<div class="panel"><h2>LLM</h2><div class="hint">Not called: ${esc(d.gate ?? "pipeline stopped before generation")}.</div></div>`;
+    const why = d.gate ?? (d.mode === "retrieval" ? "best-chunk mode, the reranker's top chunk is the answer" : "pipeline stopped before generation");
+    return `<div class="panel"><h2>LLM</h2><div class="hint">Not called: ${esc(why)}.</div></div>`;
   }
   const attempts = L.raw.map((raw, i) => {
     const g = d.generations[i];
@@ -515,7 +571,7 @@ function llmPanel(d) {
 
 // ---- interactivity after each render ----
 function wire(d) {
-  const rows = [...d.retrieved, ...d.versions.chunks];
+  const rows = [...d.retrieved, ...d.related.chunks, ...d.versions.chunks];
   drawHeat(d.embedding.vector);
   const all = $("showAll");
   if (all) all.onclick = () => {

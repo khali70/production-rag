@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { AccessScope, ScoredChunk, SearchQuery } from "../../domain/types.js";
 import type { GenerateResult } from "../../ports/llm.port.js";
 import type { Answer } from "./answer.types.js";
-import { finalizeAnswer } from "./answer.finalizer.js";
+import { bestMatchAnswer, finalizeAnswer, pickBestMatch } from "./answer.finalizer.js";
 import { resolveEvidence, type EvidenceDoc } from "./evidence.resolver.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.builder.js";
 import { EmbedStage } from "./stages/embed.stage.js";
@@ -10,7 +10,14 @@ import { GenerateStage } from "./stages/generate.stage.js";
 import { RerankStage } from "./stages/rerank.stage.js";
 import { SearchStage } from "./stages/search.stage.js";
 
+/**
+ * retrieval: the best chunk after reranking is the response, no LLM call.
+ * llm: the chunks become a prompt and the LLM writes the answer.
+ */
+export type AskMode = "retrieval" | "llm";
+
 export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
+  mode: AskMode;
   /**
    * Evidence gate: refuse without calling the model when the best cosine is
    * below this. Deterministic, so a weak retrieval never becomes a fluent answer.
@@ -31,6 +38,13 @@ export type AskOptions = Omit<SearchQuery, "text" | "embedding"> & {
    */
   versionChunks: number;
   /**
+   * For every document found, also fetch this many chunks from each document
+   * that amends or qualifies it (or that it amends or qualifies), per the
+   * authority relations. A matrix or memo changing a policy then reaches the
+   * model with the policy even when its own wording scored lower. 0 turns it off.
+   */
+  relatedChunks: number;
+  /**
    * When set, search fetches `pool` chunks by relevance, the reranker keeps
    * the best `topK`, and chunks scoring below `minScore` are dropped as
    * off-topic. Precedence is still applied afterwards by the evidence resolver.
@@ -49,9 +63,14 @@ export type AskResult = {
     bestCosine: number;
     gate?: string;
     rerank?: { modelId: string; ms: number; scores: Record<string, number>; kept: ScoredChunk[] };
+    /** retrieval mode: the chunk returned as the response, and why it was picked. */
+    best?: ScoredChunk;
+    bestReason?: string;
     /** Chunks removed by the relative cosine margin, or by the rerank floor when reranking. */
     offTopic: ScoredChunk[];
-    /** Chunks of other versions of the found documents, added after the off-topic filter. */
+    /** Chunks of documents related to the found ones (amends / qualifies), added after the off-topic filter. */
+    related: { chunks: ScoredChunk[]; ms: number };
+    /** Chunks of other versions of the found and related documents, added after the off-topic filter. */
     versions: { chunks: ScoredChunk[]; ms: number };
     evidence: EvidenceDoc[];
     prompt?: { system: string; user: string };
@@ -61,7 +80,7 @@ export type AskResult = {
   };
 };
 
-export type AskStage = "embedded" | "retrieved" | "reranked" | "versions" | "resolved" | "prompted" | "generating";
+export type AskStage = "embedded" | "retrieved" | "reranked" | "matched" | "related" | "versions" | "resolved" | "prompted" | "generating";
 
 export type AskHooks = {
   /** Fires as each stage completes, so a caller can print a live trace. */
@@ -83,8 +102,10 @@ const NOT_FOUND = "I could not find trustworthy information you have access to t
  * Orchestrates the answer pipeline. Each model-backed step is a stage behind
  * its own port, so swapping the embedder, reranker or LLM is a config change:
  *
- *   embed -> search -> gate -> [rerank] -> off-topic filter -> other versions -> resolve authority
- *         -> prompt -> generate -> finalize (sources + number check)
+ *   embed -> search -> gate -> [rerank] -> off-topic filter
+ *     retrieval mode: -> best match (the top chunk is the response)
+ *     llm mode:       -> related documents -> other versions -> resolve authority
+ *                     -> prompt -> generate -> finalize (sources + number check)
  *
  * The gate, filter, resolver and finalizer are plain code: no model decides
  * what evidence is trusted, and the sources list is never written by the model.
@@ -99,7 +120,7 @@ export class AnswerService {
   ) {}
 
   async ask(scope: AccessScope, question: string, opts: AskOptions, hooks: AskHooks = {}): Promise<AskResult> {
-    const { gateCosine, relativeCosineMargin, maxContextChars, versionChunks, rerank, ...searchOpts } = opts;
+    const { mode, gateCosine, relativeCosineMargin, maxContextChars, versionChunks, relatedChunks, rerank, ...searchOpts } = opts;
     if (rerank && rerank.pool < searchOpts.topK) {
       throw new Error(`rerank.pool (${rerank.pool}) must be >= topK (${searchOpts.topK})`);
     }
@@ -119,6 +140,7 @@ export class AnswerService {
       searchMs: 0,
       bestCosine: -1,
       offTopic: [],
+      related: { chunks: [], ms: 0 },
       versions: { chunks: [], ms: 0 },
       evidence: [],
       raw: [],
@@ -175,14 +197,41 @@ export class AnswerService {
       debug.offTopic = searched.chunks.filter((c) => !isOnTopic(c));
     }
 
-    // 5. Other versions of every document found, so old and current text of
-    //    the same file reach the model together. Not off-topic filtered: an
-    //    old version is context for the current one, whatever its cosine.
+    // 5 (retrieval mode). The best remaining chunk is the response: reranker
+    //    order when reranking, else search order, preferring a current version. No LLM.
+    if (mode === "retrieval") {
+      const { chunk: top, reason } = pickBestMatch(onTopic, question);
+      debug.best = top;
+      debug.bestReason = reason;
+      debug.evidence = resolveEvidence([top]);
+      hooks.onStage?.("matched", debug);
+      return done(bestMatchAnswer(top, debug.evidence[0]!, debug.rerank?.scores[top.chunkId] ?? null));
+    }
+
+    // 5. Documents that amend or qualify the ones found. Not off-topic
+    //    filtered: a change to a policy applies whatever its own cosine.
+    const keyOf = (c: ScoredChunk) => `${c.source.documentId}@${c.source.version}`;
+    if (relatedChunks > 0) {
+      debug.related = await this.search.related(scope, {
+        embedding: embedded.vector,
+        documentIds: [...new Set(onTopic.map((c) => c.source.documentId))],
+        skipVersions: [...new Set(onTopic.map(keyOf))],
+        perVersion: relatedChunks,
+        includeStatuses: searchOpts.includeStatuses,
+        asOf,
+      });
+    }
+    hooks.onStage?.("related", debug);
+    const found = [...onTopic, ...debug.related.chunks];
+
+    // 6. Other versions of every document found or related, so old and
+    //    current text of the same file reach the model together. Not
+    //    off-topic filtered: an old version is context for the current one.
     if (versionChunks > 0) {
       debug.versions = await this.search.versions(scope, {
         embedding: embedded.vector,
-        documentIds: [...new Set(onTopic.map((c) => c.source.documentId))],
-        skipVersions: [...new Set(onTopic.map((c) => `${c.source.documentId}@${c.source.version}`))],
+        documentIds: [...new Set(found.map((c) => c.source.documentId))],
+        skipVersions: [...new Set(found.map(keyOf))],
         perVersion: versionChunks,
         includeStatuses: searchOpts.includeStatuses,
         asOf,
@@ -190,12 +239,12 @@ export class AnswerService {
     }
     hooks.onStage?.("versions", debug);
 
-    // 6. Versioning + authority, in code.
-    const evidence = resolveEvidence([...onTopic, ...debug.versions.chunks]);
+    // 7. Versioning + authority, in code.
+    const evidence = resolveEvidence([...found, ...debug.versions.chunks]);
     debug.evidence = evidence;
     hooks.onStage?.("resolved", debug);
 
-    // 7. Prompt and generate.
+    // 8. Prompt and generate.
     const user = buildUserPrompt(evidence, { question, asOf, maxContextChars });
     debug.prompt = { system: SYSTEM_PROMPT, user };
     hooks.onStage?.("prompted", debug);
@@ -208,7 +257,7 @@ export class AnswerService {
     debug.raw = generated.raw;
     debug.generations = generated.generations;
 
-    // 8. Append the sources and check numbers against the evidence the model was given.
+    // 9. Append the sources and check numbers against the evidence the model was given.
     return done(finalizeAnswer(generated.text, evidence, { question, asOf }));
   }
 }

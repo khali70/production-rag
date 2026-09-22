@@ -1,23 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { AskRequestSchema, toAskOptions } from "../../src/modules/http/ask.request.js";
+import { AskRequestSchema, RERANK_MIN_SCORE, toAskOptions } from "../../src/modules/http/ask.request.js";
 
 describe("AskRequestSchema", () => {
   it("fills the same defaults as the ask CLI", () => {
     const req = AskRequestSchema.parse({ userId: "u-1", question: "  who approves vendors?  " });
     expect(req.question).toBe("who approves vendors?");
     expect(toAskOptions(req)).toEqual({
+      mode: "retrieval",
       topK: 3,
       includeStatuses: ["current", "superseded", "retired"],
       minCosine: undefined,
       asOf: undefined,
       orderBy: "precedence",
-      gateCosine: 0.3,
-      relativeCosineMargin: 0.15,
+      gateCosine: 0.4,
+      relativeCosineMargin: 0.25,
       maxContextChars: 12_000,
       versionChunks: 2,
-      rerank: undefined,
+      relatedChunks: 1,
+      rerank: { pool: 8, minScore: RERANK_MIN_SCORE },
     });
+  });
+
+  it("turns reranking off with rerank: null", () => {
+    const req = AskRequestSchema.parse({ userId: "u-1", question: "q", mode: "llm", k: 8, rerank: null });
+    expect(toAskOptions(req)).toMatchObject({ mode: "llm", topK: 8, rerank: undefined });
   });
 
   it("maps every field when set", () => {

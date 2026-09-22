@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { AppConfig } from "../../config/app-config.js";
 import { RerankerPort } from "../../ports/reranker.port.js";
+import { withExternalDataFallback } from "../external-data.js";
 
 /**
  * bge-reranker style cross-encoder running in-process on CPU through
@@ -67,10 +68,13 @@ export class TransformersRerankerAdapter extends RerankerPort {
     );
 
     const tokenizer = await AutoTokenizer.from_pretrained(this.modelId);
-    const model = await AutoModelForSequenceClassification.from_pretrained(this.modelId, {
-      dtype: this.config.reranker.dtype,
-      device: "cpu",
-    });
+    const model = await withExternalDataFallback((extra) =>
+      AutoModelForSequenceClassification.from_pretrained(this.modelId, {
+        dtype: this.config.reranker.dtype,
+        device: "cpu",
+        ...extra,
+      }),
+    );
 
     return {
       tokenizer: tokenizer as unknown as Tokenizer,

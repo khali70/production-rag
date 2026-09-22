@@ -42,12 +42,14 @@ function chunk(documentId: string, text: string, cosine: number): ScoredChunk {
 const scope: AccessScope = { principalId: "u-1", groups: ["g"], department: "ops" };
 
 const opts = (over: Partial<AskOptions> = {}): AskOptions => ({
+  mode: "llm",
   topK: 2,
   orderBy: "precedence",
   gateCosine: 0.5,
   relativeCosineMargin: 0.15,
   maxContextChars: 12000,
   versionChunks: 0,
+  relatedChunks: 0,
   ...over,
 });
 
@@ -56,6 +58,7 @@ function build(chunks: ScoredChunk[]) {
   const store = {
     search: async (_: AccessScope, q: SearchQuery) => (queries.push(q), chunks.slice(0, q.topK)),
     versions: async () => [],
+    related: async () => [],
   };
   const llm = new FakeLlm();
   const service = new AnswerService(
@@ -105,6 +108,54 @@ describe("answer pipeline", () => {
   it("rejects a rerank pool smaller than topK", async () => {
     const { service } = build(pool);
     await expect(service.ask(scope, "q", opts({ rerank: { pool: 1, minScore: 0 } }))).rejects.toThrow(/pool/);
+  });
+});
+
+describe("retrieval mode", () => {
+  const retrieval = (over: Partial<AskOptions> = {}) => opts({ mode: "retrieval", rerank: { pool: 3, minScore: 0.5 }, ...over });
+
+  it("returns the reranker's best chunk verbatim and never calls the LLM", async () => {
+    const { service, llm } = build(pool);
+    const { answer, debug } = await service.ask(scope, "vendor approval", retrieval());
+
+    expect(llm.calls).toHaveLength(0);
+    expect(debug.best!.source.documentId).toBe("VENDOR");
+    expect(answer.status).toBe("answered");
+    expect(answer.text).toBe("vendor approval requires procurement sign off");
+    expect(answer.match).toMatchObject({ chunkId: "VENDOR@1.0#0", rerankScore: 1, cosine: 0.7, role: "primary" });
+    expect(answer.sources.map((s) => s.source.documentId)).toEqual(["VENDOR"]);
+  });
+
+  it("qualifies a best match that is not the rule in force", async () => {
+    const old = { ...chunk("VENDOR", "vendor approval requires CFO sign off", 0.7), status: "superseded" as const };
+    const { service } = build([old]);
+    const { answer } = await service.ask(scope, "vendor approval", retrieval());
+    expect(answer.status).toBe("qualified");
+    expect(answer.warnings.join()).toMatch(/superseded version/);
+  });
+
+  it("prefers a current version over a higher-ranked old one, unless the question asks about the past", async () => {
+    const old = { ...chunk("POL", "vendor approval threshold is 100,000", 0.8), chunkId: "POL@0.9#0", status: "retired" as const };
+    const current = chunk("POL", "the vendor approval threshold is 50,000 and applies from July", 0.7);
+    const { service } = build([old, current]);
+
+    const now = await service.ask(scope, "vendor approval threshold", retrieval({ rerank: { pool: 2, minScore: 0 } }));
+    expect(now.answer.match!.chunkId).toBe("POL@1.0#0");
+    expect(now.debug.bestReason).toMatch(/first current version/);
+
+    const then = await service.ask(scope, "what was vendor approval threshold before", retrieval({ rerank: { pool: 2, minScore: 0 } }));
+    expect(then.answer.match!.chunkId).toBe("POL@0.9#0");
+    expect(then.answer.status).toBe("qualified");
+  });
+
+  it("returns no chunk when every reranked chunk is below the floor", async () => {
+    const { service, llm } = build(pool);
+    const { answer, debug } = await service.ask(scope, "holiday rota", retrieval());
+    expect(answer.status).toBe("refused");
+    expect(answer.match).toBeUndefined();
+    expect(answer.sources).toEqual([]);
+    expect(debug.best).toBeUndefined();
+    expect(llm.calls).toHaveLength(0);
   });
 });
 
@@ -160,6 +211,33 @@ describe("other versions of the files found", () => {
     const prompt = llm.calls[0]!.messages[0]!.content;
     expect(prompt).toContain('v="0.9" state="old"');
     expect(prompt).toContain("The CFO approved vendors.");
+  });
+
+  it("adds documents related to the ones found, then their other versions too", async () => {
+    const policy = chunk("POL", "Procurement approves vendors.", 0.7);
+    const matrix: ScoredChunk = {
+      ...chunk("MTX", "Below USD 50,000 the budget owner approves.", 0.1),
+      relations: [{ kind: "amends", documentId: "POL", version: "1.0", scope: "thresholds" }],
+    };
+    const relatedQueries: VersionQuery[] = [];
+    const versionQueries: VersionQuery[] = [];
+    const store = {
+      search: async () => [policy],
+      related: async (_: AccessScope, q: VersionQuery) => (relatedQueries.push(q), [matrix]),
+      versions: async (_: AccessScope, q: VersionQuery) => (versionQueries.push(q), []),
+    };
+    const service = new AnswerService(
+      new EmbedStage(new FakeEmbeddingAdapter()),
+      new SearchStage(store as unknown as VectorStorePort),
+      new RerankStage(new FakeReranker()),
+      new GenerateStage(new FakeLlm(() => "Budget owner.")),
+    );
+
+    const { debug } = await service.ask(scope, "who approves 40k", opts({ relatedChunks: 1, versionChunks: 2 }));
+
+    expect(relatedQueries[0]).toMatchObject({ documentIds: ["POL"], skipVersions: ["POL@1.0"], perVersion: 1 });
+    expect(versionQueries[0]).toMatchObject({ documentIds: ["POL", "MTX"], skipVersions: ["POL@1.0", "MTX@1.0"] });
+    expect(debug.evidence.map((d) => [d.documentId, d.role])).toEqual([["POL", "primary"], ["MTX", "modifier"]]);
   });
 
   it("skips the lookup when versionChunks is 0", async () => {
