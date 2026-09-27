@@ -8,3 +8,6 @@ coverage
 
 # ask traces: hold document text and prompts, local only
 traces/
+
+# video script notes, local only
+obsidian/

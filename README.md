@@ -10,7 +10,7 @@ A fully offline Retrieval-Augmented Generation service running on local CPU mode
 ![NestJS](https://img.shields.io/badge/NestJS-12-E0234E?logo=nestjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?logo=typescript&logoColor=white)
 ![pgvector](https://img.shields.io/badge/Postgres-pgvector-4169E1?logo=postgresql&logoColor=white)
-![Tests](https://img.shields.io/badge/tests-89%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-122%20passing-brightgreen)
 ![GPU](https://img.shields.io/badge/GPU-not%20required-lightgrey)
 ![Offline](https://img.shields.io/badge/runs-100%25%20offline-blueviolet)
 
@@ -31,7 +31,7 @@ Most RAG demos answer confidently. Enterprise RAG has to answer **correctly, for
 | **Wrong policy becomes the answer** | A retired v2.1 policy outranks the current v3 because it scored higher | Lifecycle + authority layer: status, supersedes/amends relations, org level and document tier decide precedence, not cosine |
 | **Convincing unsupported answer** | The model invents an SLA that the contract never states | Answer finalizer: any number the evidence does not contain downgrades the answer to *qualified* with a warning; sources are appended by code, never by the model |
 | **Security failure** | An engineer asking about leave sees a confidential HR investigation; a document says "ignore your rules" | ACL pre-filter in SQL (restricted chunks never enter the candidate set) + ingest-time prompt-injection scanner that caps malicious docs at the lowest trust tier |
-| **Undetected regression** | A model or prompt change silently breaks behavior | Unit + contract test suites and a traceable pipeline run for every question |
+| **Undetected regression** | A model or prompt change silently breaks behavior | `pnpm eval`: versioned incident cases plus paraphrases through the real pipeline, checked in code, exit 1 on any failure (release blocking). Unit + contract suites and a trace for every question |
 
 ## See it in action
 
@@ -112,18 +112,13 @@ The embedding and reranker models download automatically on first use into `.cac
 ollama pull qwen3.5:4b
 ```
 
-Optional: give the model an 8K context window so larger evidence sets fit. Create a file named `Modelfile` with:
-
-```
-FROM qwen3.5:4b
-PARAMETER num_ctx 8192
-```
+The tuned defaults and the committed eval results use the model with an 8K context window, so larger evidence sets fit. `.env.example` already points at that name (`LLM_MODEL_ID=qwen3.5-4b-8k`), so create it once:
 
 ```bash
-ollama create qwen3.5-4b-8k -f Modelfile
+printf 'FROM qwen3.5:4b\nPARAMETER num_ctx 8192\n' > Modelfile && ollama create qwen3.5-4b-8k -f Modelfile
 ```
 
-Then set `LLM_MODEL_ID=qwen3.5-4b-8k` in `.env`.
+To skip this step, set `LLM_MODEL_ID=qwen3.5:4b` in `.env` instead (default 4K context: long evidence sets get truncated).
 
 ### Go fully offline
 
@@ -188,6 +183,10 @@ ollama pull qwen3.5:4b
 ```
 
 ```bash
+printf 'FROM qwen3.5:4b\nPARAMETER num_ctx 8192\n' > Modelfile && ollama create qwen3.5-4b-8k -f Modelfile
+```
+
+```bash
 pnpm db:up
 ```
 
@@ -196,10 +195,16 @@ pnpm build && pnpm migrate && pnpm ingest
 ```
 
 ```bash
+pnpm eval
+```
+
+```bash
 pnpm --filter api start
 ```
 
 Open **http://localhost:3001/**, pick a user, ask a question. The first run downloads the embedding model and the reranker (~570 MB each) into `.cache/models`; set `EMBEDDING_ALLOW_REMOTE=false` afterwards for fully offline runs.
+
+Docker runs only Postgres + pgvector (`pnpm db:up`, with a health check so `migrate` never races it). The API, the embedding and reranker models, and Ollama run on the host. `pnpm eval` is the release gate: it must end with `PASSED` before the playground is worth opening (see [Eval](#eval-release-gate); the llm-mode run takes about 30 minutes on a laptop, `pnpm eval --profile retrieval` is the fast check).
 
 ### CLI
 
@@ -212,6 +217,53 @@ pnpm trace "who approves a regulated vendor"
 ```
 
 `trace` prints every pipeline step: embed, search, gate, rerank, authority, prompt, LLM, finalize. Every question asked in the playground also saves the same trace to `traces/web-<time>-<user>.txt` (gitignored: it holds document text and prompts).
+
+### Eval (release gate)
+
+```bash
+pnpm eval
+```
+
+Builds, then asks every case in [`eval/cases.v1.json`](eval/cases.v1.json) through the real pipeline as its user (identity resolved server-side) and checks the outcome in code, no model grades another model. 22 cases: the three testable incidents with paraphrases and other users (wrong policy, unsupported SLA, leak and injection). The fourth incident, regression, is this command. The last line is `PASSED n/m` or `FAILED n/m`, and any failure exits 1.
+
+Each case states the allowed status (`answered` / `qualified` / `refused`), documents it must cite, versions that must never be served as current, documents that must never even be retrieved for that user (the leak check covers every chunk the pipeline touched, not only the answer), and regexes the answer must or must not contain. Paraphrases share a `group` and must reach the same outcome.
+
+Two profiles live in the cases file, with the same fields and defaults as `POST /api/ask`:
+
+| Profile | Settings | Needs | Time on an M1 |
+|---|---|---|---|
+| `llm` (default) | the playground's tuned set, `qwen3.5-4b-8k` writes the answer | Ollama running | ~2 min per LLM case, ~30 min total |
+| `retrieval` | API default, best reranked chunk, no LLM | Postgres only | ~3 min total |
+
+```bash
+pnpm eval --profile retrieval
+```
+
+```bash
+pnpm eval --incident leak --repeat 2
+```
+
+Other flags: `--case <id,id>`, `--demo` (demo cases only), `--results <path>`. A full run writes its results next to the cases, per profile: `eval/results.v1.llm.json` and `eval/results.v1.retrieval.json` (status, sources, warnings, failures and answer per run; answers backed by restricted evidence are omitted).
+
+### Demo (one command per incident)
+
+```bash
+pnpm demo wrong-policy
+```
+
+```bash
+pnpm demo unsupported
+```
+
+```bash
+pnpm demo leak
+```
+
+```bash
+pnpm demo regression
+```
+
+Each asks the incident's demo cases from the same cases file and prints user, question, status, answer, sources and the eval check. `leak` shows the engineer and then the HR investigator asking the same question. `regression` runs every demo case through the eval checks and ends with `PASSED n/m` and the exit code. Add `--profile retrieval` for the fast path without an LLM. `pnpm -s demo leak` also hides pnpm's own two-line banner, for recording. The playground has the same questions in its **Demo** picker (fills user and question only).
 
 ### Tests
 
@@ -233,8 +285,10 @@ apps/api/src
   modules/corpus/   pack loader, checksum verifier, ACL resolver, chunker, injection scanner, authority
   modules/answer/   embed -> search -> rerank -> generate stages, prompt builder, finalizer
   modules/http/     playground page + JSON API (localhost only)
-  cli/              migrate, ingest, search, ask, trace
+  modules/eval/     eval case schema, checks (pure), runner shared by eval and demo
+  cli/              migrate, ingest, search, ask, trace, eval, demo
 data/authority.yaml reviewed authority layer with evidence quotes
+eval/               versioned eval cases (cases.v1.json) and latest results per profile
 context/            design notes and decision records
 Kentrick_Assessment_Pack_Candidate/  supplied synthetic corpus (read-only)
 ```
