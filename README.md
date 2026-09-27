@@ -155,6 +155,8 @@ Refusals are fast: when no permitted evidence passes the gate, neither the reran
 - **`retrieval` (default):** search returns 8 chunks, the reranker keeps the top 3 (score >= 0.005), and the best one is returned verbatim with its source. A current version beats a higher-ranked old one, unless the question asks about the past ("old", "previous", "replaced"...). A retired or low-trust best match is marked `qualified`. Any current document whose authority relation says it **amends** the best match's document is appended after it (e.g. the Procurement Approval Matrix after a vendor policy section): the reranker scores a table low, so the policy wins the pick while its thresholds live in the matrix. `relatedChunks` (default 1, 0 = off) sets how many chunks per amending document. No LLM call.
 - **`llm`:** the chunks, related documents and other versions become a prompt and the LLM writes the answer (send `"mode": "llm"`, typically with `"k": 8, "rerank": null`).
 
+The playground opens on a tuned set: `llm` mode, `k` 5, rerank pool 12 (min score 0.005), gate cosine 0.40, cosine margin 0.25, precedence order, all statuses, 2 other versions and 1 related document per file, 12,000 context chars. The API and CLI still default to `retrieval` mode, since they are also used for scripted retrieval checks. Settings are remembered per browser; **Reset to tuned defaults** puts them back.
+
 Every request writes a full trace to `traces/web-<time>-<user>.txt` and one summary block to the server log: the reranker's top 3 with scores, which one was returned and why.
 
 ### Swap models
@@ -242,9 +244,20 @@ Kentrick_Assessment_Pack_Candidate/  supplied synthetic corpus (read-only)
 - The playground lets you **impersonate any pack user** for demo purposes, so the server binds to `127.0.0.1` only. Do not expose it to a network.
 - All corpus data is **synthetic**, supplied by the quest. No real people, suppliers or contracts.
 
+## Production scaling
+
+This repo is the local prototype. The production design targets 60,000 documents (~180 GB), 5,000 employees, 20 req/s peak and P95 under 6 s, with zero unauthorized disclosure and region residency. Two paths, both keeping the pipeline and the guardrails unchanged because retrieval sits behind `VectorStorePort`:
+
+| Path | Retrieval | When to pick it |
+|---|---|---|
+| [`scaling/azure-openai.md`](scaling/azure-openai.md) | Azure AI Search + Azure OpenAI | Target architecture at full scale: replicas and partitions scale independently, semantic ranker off the API tier |
+| [`scaling/postgres.md`](scaling/postgres.md) | Postgres + pgvector (the store already built) | Start here. Zero retrieval code change, one transactional system of record, portable and self-hostable. Limits and the migration trigger are stated |
+
+Both share the same constraint: the LLM dominates latency and throughput, not retrieval. Observability, tracing and the sampled quality checks are in [`context/12-observability.md`](context/12-observability.md).
+
 ## Design docs
 
-Decisions, trade-offs and thought experiments live in [`context/`](context/README.md): backend architecture, model choice, vector store design, sizing for 60K documents, and "what if" analyses.
+Decisions, trade-offs and thought experiments live in [`context/`](context/README.md): backend architecture, model choice, vector store design, sizing for 60K documents, observability, and "what if" analyses.
 
 ## Links
 

@@ -15,6 +15,14 @@ Captured 2026-09-18. These are decisions and proposals, not final specs.
 | [08-assessment-pack.md](08-assessment-pack.md) | Real pack contents: fields, docs, users, access rule, expected outcomes |
 | [09-what-if-latest-version-only.md](09-what-if-latest-version-only.md) | Thought experiment: index only the latest version of each doc |
 | [10-what-if-allowed-groups-only.md](10-what-if-allowed-groups-only.md) | Thought experiment: filter by allowed_groups only, skip classification |
+| [12-observability.md](12-observability.md) | Query log, full request tracing, replay, sampled quality checks with an LLM judge |
+
+Production scaling designs live in [`scaling/`](../scaling/):
+
+| File | Topic |
+|---|---|
+| [azure-openai.md](../scaling/azure-openai.md) | Part 2: Azure deployment with Azure OpenAI + AI Search, scaling strategy, trust boundaries, failure handling, migration path |
+| [postgres.md](../scaling/postgres.md) | Same targets on Postgres + pgvector: index memory limits, replicas, pooling, reduction levers, when to migrate |
 
 Links:
 - Spec: https://code-quests.com/quests-details/?id=88

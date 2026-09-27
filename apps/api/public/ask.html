@@ -154,8 +154,8 @@
     <div class="field">
       <div class="lbl">Mode</div>
       <div class="seg">
-        <label><input type="radio" name="mode" value="retrieval" checked><span>best chunk</span></label>
-        <label><input type="radio" name="mode" value="llm"><span>LLM</span></label>
+        <label><input type="radio" name="mode" value="retrieval"><span>best chunk</span></label>
+        <label><input type="radio" name="mode" value="llm" checked><span>LLM</span></label>
       </div>
       <div class="hint">Best chunk: the reranker's top chunk is the answer, no LLM. LLM: the chunks become a prompt.</div>
     </div>
@@ -163,7 +163,7 @@
     <h2>Retrieval</h2>
     <label class="field">
       <div class="lbl">Top k <output id="kOut"></output></div>
-      <input type="range" id="k" min="1" max="20" step="1" value="3">
+      <input type="range" id="k" min="1" max="20" step="1" value="5">
       <div class="hint">Chunks kept after reranking. In best-chunk mode the first one is returned.</div>
     </label>
     <label class="field">
@@ -216,7 +216,7 @@
     <div class="sub" id="rerankBox">
       <label class="field">
         <div class="lbl">Pool <output id="rerankPoolOut"></output></div>
-        <input type="range" id="rerankPool" min="1" max="50" step="1" value="8">
+        <input type="range" id="rerankPool" min="1" max="50" step="1" value="12">
         <div class="hint">Candidates fetched before reranking. Never below k.</div>
       </label>
       <label class="field">
@@ -239,6 +239,7 @@
     </div>
 
     <button type="submit" id="go">Ask</button>
+    <button type="button" class="btn-sm" id="reset">Reset to tuned defaults</button>
     <div class="kbd">Cmd/Ctrl + Enter</div>
   </form>
 
@@ -251,7 +252,7 @@
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (n, d = 3) => (n === null || n === undefined ? "n/a" : Number(n).toFixed(d));
-const STORE = "ask-playground-v5";
+const STORE = "ask-playground-v6";
 let users = [];
 
 // ---- sliders ----
@@ -272,6 +273,29 @@ $("rerankOn").addEventListener("change", () => { $("rerankBox").hidden = !$("rer
 $("form").addEventListener("input", () => { syncOutputs(); save(); });
 
 // ---- persistence (per browser convenience only) ----
+// The markup holds the tuned defaults, so they are captured before restore()
+// overwrites the form with whatever this browser used last.
+const TUNED = (() => {
+  const v = {};
+  for (const el of $("form").querySelectorAll("input, select, textarea")) {
+    const key = el.id || `${el.name}:${el.value}`;
+    v[key] = el.type === "checkbox" || el.type === "radio" ? el.checked : el.value;
+  }
+  return v;
+})();
+
+function apply(v) {
+  for (const el of $("form").querySelectorAll("input, select, textarea")) {
+    const key = el.id || `${el.name}:${el.value}`;
+    if (!(key in v)) continue;
+    if (el.type === "checkbox" || el.type === "radio") el.checked = v[key];
+    else el.value = v[key];
+  }
+  $("minCosine").disabled = !$("minCosineOn").checked;
+  $("rerankBox").hidden = !$("rerankOn").checked;
+  syncOutputs();
+}
+
 function snapshot() {
   const v = {};
   for (const el of $("form").querySelectorAll("input, select, textarea")) {
@@ -286,15 +310,17 @@ function restore() {
   let v;
   try { v = JSON.parse(localStorage.getItem(STORE) || "null"); } catch {}
   if (!v) return;
-  for (const el of $("form").querySelectorAll("input, select, textarea")) {
-    const key = el.id || `${el.name}:${el.value}`;
-    if (!(key in v)) continue;
-    if (el.type === "checkbox" || el.type === "radio") el.checked = v[key];
-    else el.value = v[key];
-  }
-  $("minCosine").disabled = !$("minCosineOn").checked;
-  $("rerankBox").hidden = !$("rerankOn").checked;
+  // The question is not restored: only the settings around it.
+  delete v.question;
+  apply(v);
 }
+
+$("reset").addEventListener("click", () => {
+  const question = $("question").value;
+  apply(TUNED);
+  $("question").value = question;
+  try { localStorage.removeItem(STORE); } catch {}
+});
 
 // ---- users + models ----
 function showGroups() {
