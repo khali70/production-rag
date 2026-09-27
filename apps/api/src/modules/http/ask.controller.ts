@@ -22,6 +22,7 @@ import { RerankerPort } from "../../ports/reranker.port.js";
 import { AnswerService } from "../answer/answer.service.js";
 import { formatTrace } from "../answer/ask.trace.js";
 import { PackLoader } from "../corpus/pack.loader.js";
+import { DEFAULT_CASES, loadEvalFile } from "../eval/eval.cases.js";
 import { AskRequestSchema, toAskOptions } from "./ask.request.js";
 
 /** public/ sits next to dist/ and src/, three levels up from this file. */
@@ -87,6 +88,20 @@ export class AskController {
       department: u.department,
       groups: u.groups,
     }));
+  }
+
+  /** Demo questions from the eval cases, for the playground's preset picker. Question and user only. */
+  @Get("api/demo")
+  async demo() {
+    try {
+      const file = await loadEvalFile(resolve(REPO_ROOT, DEFAULT_CASES));
+      return file.cases
+        .filter((c) => c.demo)
+        .map((c) => ({ id: c.id, incident: c.incident, userId: c.user, question: c.question }));
+    } catch (err) {
+      this.logger.warn(`demo presets unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
   }
 
   @Get("api/info")

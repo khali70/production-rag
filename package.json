@@ -10,6 +10,8 @@
     "migrate": "pnpm --filter api migrate",
     "ingest": "pnpm --filter api ingest",
     "trace": "pnpm --filter api trace",
+    "eval": "pnpm --silent build && pnpm --silent --filter api eval",
+    "demo": "pnpm --silent build && pnpm --silent --filter api demo",
     "test": "pnpm --filter api test",
     "test:contract": "pnpm --filter api test:contract"
   },

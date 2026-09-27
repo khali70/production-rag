@@ -141,6 +141,10 @@
   <form class="panel" id="form" autocomplete="off">
     <h2>Question</h2>
     <label class="field">
+      <div class="lbl">Demo</div>
+      <select id="demo"><option value="">pick a demo question (optional)</option></select>
+    </label>
+    <label class="field">
       <div class="lbl">User</div>
       <select id="userId" required><option value="">loading users...</option></select>
       <div class="groups" id="groups"></div>
@@ -299,7 +303,7 @@ function apply(v) {
 function snapshot() {
   const v = {};
   for (const el of $("form").querySelectorAll("input, select, textarea")) {
-    if (!el.id && !el.name) continue;
+    if ((!el.id && !el.name) || el.id === "demo") continue;
     const key = el.id || `${el.name}:${el.value}`;
     v[key] = el.type === "checkbox" || el.type === "radio" ? el.checked : el.value;
   }
@@ -329,14 +333,28 @@ function showGroups() {
 }
 $("userId").addEventListener("change", showGroups);
 
+// ---- demo presets (from eval/cases.v1.json): fill user + question only ----
+let demos = [];
+$("demo").addEventListener("change", () => {
+  const d = demos[+$("demo").value];
+  if ($("demo").value === "" || !d) return;
+  $("userId").value = d.userId;
+  $("question").value = d.question;
+  showGroups();
+});
+
 async function boot() {
   try {
-    const [uRes, iRes] = await Promise.all([fetch("/api/users"), fetch("/api/info")]);
+    const [uRes, iRes, dRes] = await Promise.all([fetch("/api/users"), fetch("/api/info"), fetch("/api/demo")]);
     users = await uRes.json();
     const info = await iRes.json();
     $("models").textContent = `embed: ${info.embedding.modelId} (${info.embedding.dim}d)  |  rerank: ${info.reranker.modelId}  |  llm: ${info.llm.modelId}`;
     $("userId").innerHTML = '<option value="">choose a user</option>' + users
       .map((u) => `<option value="${esc(u.userId)}">${esc(u.userId)}${u.displayName ? " - " + esc(u.displayName) : ""} (${esc(u.department)})</option>`)
+      .join("");
+    demos = await dRes.json();
+    $("demo").innerHTML = '<option value="">pick a demo question (optional)</option>' + demos
+      .map((d, i) => `<option value="${i}">${esc(d.incident)}: ${esc(d.userId)} - ${esc(d.question)}</option>`)
       .join("");
   } catch (e) {
     $("models").textContent = "API not reachable";

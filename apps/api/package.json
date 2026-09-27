@@ -10,6 +10,8 @@
     "ingest": "node dist/cli/ingest.js",
     "search": "node dist/cli/search.js",
     "ask": "node dist/cli/ask.js",
+    "eval": "node dist/cli/eval.js",
+    "demo": "node dist/cli/demo.js",
     "trace": "bash ../../prompts/ask.sh",
     "test": "vitest run --config vitest.config.ts",
     "test:contract": "vitest run --config vitest.contract.config.ts"
