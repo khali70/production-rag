@@ -232,6 +232,7 @@ export class AskController {
       lines.push(`  best ${where(d.best)}`);
     }
     if (d.bestReason) lines.push(`  pick: ${d.bestReason}`);
+    for (const a of answer.amendments ?? []) lines.push(`  + amended by ${a.source.documentId} v${a.source.version} (${a.scope})`);
     lines.push(`  -> ${answer.status}${answer.warnings.length ? ` (${answer.warnings.join("; ")})` : ""} in ${d.totalMs} ms, trace ${traceFile ?? "not saved"}`);
     this.logger.log(lines.join("\n"));
   }

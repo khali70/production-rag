@@ -1,5 +1,5 @@
 import type { ScoredChunk } from "../../domain/types.js";
-import type { Answer, Source } from "./answer.types.js";
+import type { Answer, Match, Source } from "./answer.types.js";
 import type { EvidenceDoc } from "./evidence.resolver.js";
 
 /** The exact sentence the prompt tells the model to use when the documents do not answer. */
@@ -170,33 +170,72 @@ export function pickBestMatch(chunks: ScoredChunk[], question: string): { chunk:
   };
 }
 
+/** A current document that amends the picked one's document, with the scope of the change. */
+export type Amendment = { chunk: ScoredChunk; scope: string };
+
 /**
- * retrieval mode: the best chunk is the answer, verbatim. Nothing is
- * generated, so there is nothing to number-check; the answer is only
- * downgraded when the chunk is not the rule in force or its document is low
- * trust. A contract or case record is a fine answer to a question about it.
+ * retrieval mode: related chunks that amend the picked chunk's document, any
+ * version of it. The reranker reads a table such as an approval matrix as
+ * loose words and scores it low, so the policy wins the pick while its numbers
+ * live in the matrix. Following the reviewed relation brings the matrix along.
+ * Qualifications are left out: they narrow one stage and would be noise on
+ * most answers.
  */
-export function bestMatchAnswer(chunk: ScoredChunk, doc: EvidenceDoc, rerankScore: number | null): Answer {
-  const text = chunk.text.trim();
+export function amendmentsOf(picked: ScoredChunk, related: ScoredChunk[]): Amendment[] {
+  const out: Amendment[] = [];
+  for (const c of related) {
+    if (c.status !== "current" || c.source.documentId === picked.source.documentId) continue;
+    const rel = c.relations.find((r) => r.kind === "amends" && r.documentId === picked.source.documentId);
+    if (rel && rel.kind === "amends") out.push({ chunk: c, scope: rel.scope });
+  }
+  return out;
+}
+
+const toMatch = (chunk: ScoredChunk, docs: EvidenceDoc[], rerankScores: Record<string, number>): Match => ({
+  chunkId: chunk.chunkId,
+  source: chunk.source,
+  status: chunk.status,
+  effectiveFrom: chunk.effectiveFrom,
+  role: docs.find((d) => d.documentId === chunk.source.documentId && d.version === chunk.source.version)?.role ?? "primary",
+  rerankScore: rerankScores[chunk.chunkId] ?? null,
+  cosine: chunk.cosine,
+});
+
+/**
+ * retrieval mode: the best chunk is the answer, verbatim, followed by the
+ * chunks of any current document that amends it. Nothing is generated, so
+ * there is nothing to number-check; the answer is only downgraded when the
+ * chunk is not the rule in force or its document is low trust. A contract or
+ * case record is a fine answer to a question about it.
+ */
+export function bestMatchAnswer(
+  chunk: ScoredChunk,
+  evidence: EvidenceDoc[],
+  rerankScores: Record<string, number>,
+  amendments: Amendment[] = [],
+): Answer {
+  const parts = [chunk.text.trim()];
+  for (const { chunk: a, scope } of amendments) {
+    parts.push(`Amended by ${a.source.documentId} v${a.source.version} "${a.source.title}" (${scope}):\n${a.text.trim()}`);
+  }
+  const text = parts.join("\n\n");
   const warnings: string[] = [];
   if (chunk.status !== "current") warnings.push(`best match is from a ${chunk.status} version: not the rule in force`);
   if (chunk.trust === "low") warnings.push("best match is from a low-trust document: verify before relying on it");
 
-  const sources: Source[] = [{ id: doc.id, role: doc.role, source: chunk.source }];
+  const match = toMatch(chunk, evidence, rerankScores);
+  const amended = amendments.map(({ chunk: a, scope }) => ({ ...toMatch(a, evidence, rerankScores), scope }));
+  const sources: Source[] = [
+    { id: "C1", role: match.role, source: chunk.source },
+    ...amended.map((m, i) => ({ id: `C${i + 2}`, role: m.role, source: m.source })),
+  ];
   return {
     status: warnings.length > 0 ? "qualified" : "answered",
     text,
     message: `${text}\n\n${formatSources(sources)}`,
     sources,
     warnings,
-    match: {
-      chunkId: chunk.chunkId,
-      source: chunk.source,
-      status: chunk.status,
-      effectiveFrom: chunk.effectiveFrom,
-      role: doc.role,
-      rerankScore,
-      cosine: chunk.cosine,
-    },
+    match,
+    ...(amended.length > 0 ? { amendments: amended } : {}),
   };
 }

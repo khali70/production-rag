@@ -62,7 +62,7 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
     "",
     `Pipeline:  embed -> retrieve -> gate -> ${o.rerank ? "rerank -> " : ""}off-topic filter -> ` +
       (o.mode === "retrieval"
-        ? "best match -> answer"
+        ? "best match -> + amending documents -> answer"
         : "related documents -> other versions -> resolve authority -> prompt -> LLM -> finalize -> answer"),
   );
 
@@ -155,6 +155,21 @@ export function formatTrace(ctx: TraceContext, result: AskResult): string {
           `    status=${b.status} from=${b.effectiveFrom} trust=${b.trust} role=${debug.evidence[0]?.role ?? "?"}`,
           `    cosine=${fmtCos(b.cosine)}${rr === undefined ? "" : `  rerank=${rr.toFixed(4)}`}`,
           `    why: ${debug.bestReason ?? ""}`,
+        );
+      }
+      // 5b. Amending documents
+      out.push(step("5b", "ADD AMENDING DOCUMENTS", `${debug.related.ms} ms, ${debug.related.chunks.length} chunks`));
+      out.push(
+        o.relatedChunks > 0
+          ? `Current documents whose authority relation says they amend ${b ? b.source.documentId : "the best match"} (best ${o.relatedChunks} chunk(s) each), appended to the answer.`
+          : "Off (relatedChunks=0).",
+        "",
+      );
+      if (o.relatedChunks > 0 && debug.related.chunks.length === 0) out.push("No amending documents visible.");
+      for (const a of answer.amendments ?? []) {
+        out.push(
+          `+  ${a.source.documentId} v${a.source.version}  "${a.source.title}"  amends: ${a.scope}`,
+          `     section: ${a.source.sectionPath.join(" > ")}   chunk ${a.source.chunkIndex}   cosine=${fmtCos(a.cosine)}${a.rerankScore === null ? "  (not in rerank pool)" : `  rerank=${a.rerankScore.toFixed(4)}`}`,
         );
       }
       if (answer.warnings.length > 0) out.push("", ...answer.warnings.map((w) => `! ${w}`));

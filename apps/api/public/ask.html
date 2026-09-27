@@ -389,7 +389,7 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
   $("out").innerHTML = `
     <div class="panel">
       <span class="badge ${esc(a.status)}">${esc(a.status)}</span>
-      ${a.match ? matchHead({ ...a.match, reason: d.bestReason }) : ""}
+      ${a.match ? matchHead({ ...a.match, reason: d.bestReason }, a.amendments) : ""}
       <div class="message">${esc(a.text)}</div>
       ${a.sources.length ? `<h2>Sources</h2>${sourceList(a.sources)}` : ""}
       ${a.warnings.length ? `<h2>Warnings</h2>${a.warnings.map((w) => `<div class="note">${esc(w)}</div>`).join("")}` : ""}
@@ -456,12 +456,14 @@ function render({ answer: a, traceFile, diagnostics: d }, wallMs) {
 }
 
 // ---- best match + reranker ranking ----
-function matchHead(m) {
+function matchHead(m, amendments = []) {
   const s = m.source;
+  const amended = amendments.map((a) => `<div class="hint">+ amended by ${esc(a.source.title)} (${esc(a.source.documentId)} v${esc(a.source.version)}): ${esc(a.scope)}
+    | rerank ${a.rerankScore === null ? "not in pool" : fmt(a.rerankScore, 4)} | cosine ${fmt(a.cosine)}</div>`).join("");
   return `<h2>Best match</h2>
     <div class="hint">${esc(s.title)} (${esc(s.documentId)} v${esc(s.version)}${s.sectionPath?.length ? ", " + esc(s.sectionPath.join(" > ")) : ""})
     | ${esc(m.status)} from ${esc(m.effectiveFrom)} | ${esc(m.role)} | rerank ${fmt(m.rerankScore, 4)} | cosine ${fmt(m.cosine)}</div>
-    ${m.reason ? `<div class="hint">why: ${esc(m.reason)}</div>` : ""}`;
+    ${m.reason ? `<div class="hint">why: ${esc(m.reason)}</div>` : ""}${amended}`;
 }
 
 function rerankPanel(d) {

@@ -56,7 +56,7 @@ flowchart LR
     S --> G{Evidence gate<br/>no LLM}
     G -- too weak --> R[Refuse safely]
     G -- ok --> RR[Cross-encoder rerank<br/>pool 8 -> top 3]
-    RR -- default mode --> BM[Best match<br/>current version first,<br/>returned verbatim, no LLM]
+    RR -- default mode --> BM[Best match<br/>current version first,<br/>+ amending documents,<br/>returned verbatim, no LLM]
     RR -- llm mode --> RD[Related documents<br/>amends / qualifies, same ACL]
     RD --> VX[Other versions<br/>of each file found, same ACL]
     VX --> A[Authority + precedence<br/>level, tier, relations, priority]
@@ -152,7 +152,7 @@ Refusals are fast: when no permitted evidence passes the gate, neither the reran
 
 ### Answer modes
 
-- **`retrieval` (default):** search returns 8 chunks, the reranker keeps the top 3 (score >= 0.005), and the best one is returned verbatim with its source. A current version beats a higher-ranked old one, unless the question asks about the past ("old", "previous", "replaced"...). A retired or low-trust best match is marked `qualified`. No LLM call.
+- **`retrieval` (default):** search returns 8 chunks, the reranker keeps the top 3 (score >= 0.005), and the best one is returned verbatim with its source. A current version beats a higher-ranked old one, unless the question asks about the past ("old", "previous", "replaced"...). A retired or low-trust best match is marked `qualified`. Any current document whose authority relation says it **amends** the best match's document is appended after it (e.g. the Procurement Approval Matrix after a vendor policy section): the reranker scores a table low, so the policy wins the pick while its thresholds live in the matrix. `relatedChunks` (default 1, 0 = off) sets how many chunks per amending document. No LLM call.
 - **`llm`:** the chunks, related documents and other versions become a prompt and the LLM writes the answer (send `"mode": "llm"`, typically with `"k": 8, "rerank": null`).
 
 Every request writes a full trace to `traces/web-<time>-<user>.txt` and one summary block to the server log: the reranker's top 3 with scores, which one was returned and why.

@@ -153,6 +153,7 @@ async function main(): Promise<void> {
           case "matched":
             live(`[4] off-topic filter${options.rerank ? ` (rerank < ${options.rerank.minScore})` : ""}: dropped ${d.offTopic.length} chunk(s)\n`);
             live(`[5] best match: ${d.best!.source.documentId} v${d.best!.source.version} [${d.best!.source.sectionPath.join(" > ")}]\n`);
+            for (const c of d.related.chunks) live(`[5b] + amended by ${c.source.documentId} v${c.source.version}\n`);
             break;
           case "related":
             if (options.relatedChunks > 0) live(`[4b] related documents: ${d.related.chunks.length} chunk(s) (${d.related.ms} ms)\n`);

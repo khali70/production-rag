@@ -2,7 +2,7 @@ import { Inject, Injectable } from "@nestjs/common";
 import type { AccessScope, ScoredChunk, SearchQuery } from "../../domain/types.js";
 import type { GenerateResult } from "../../ports/llm.port.js";
 import type { Answer } from "./answer.types.js";
-import { bestMatchAnswer, finalizeAnswer, pickBestMatch } from "./answer.finalizer.js";
+import { amendmentsOf, bestMatchAnswer, finalizeAnswer, pickBestMatch, type Amendment } from "./answer.finalizer.js";
 import { resolveEvidence, type EvidenceDoc } from "./evidence.resolver.js";
 import { SYSTEM_PROMPT, buildUserPrompt } from "./prompt.builder.js";
 import { EmbedStage } from "./stages/embed.stage.js";
@@ -68,7 +68,10 @@ export type AskResult = {
     bestReason?: string;
     /** Chunks removed by the relative cosine margin, or by the rerank floor when reranking. */
     offTopic: ScoredChunk[];
-    /** Chunks of documents related to the found ones (amends / qualifies), added after the off-topic filter. */
+    /**
+     * llm mode: chunks of documents related to the found ones (amends / qualifies), added after the off-topic filter.
+     * retrieval mode: chunks of current documents that amend the best match, appended to the answer.
+     */
     related: { chunks: ScoredChunk[]; ms: number };
     /** Chunks of other versions of the found and related documents, added after the off-topic filter. */
     versions: { chunks: ScoredChunk[]; ms: number };
@@ -103,7 +106,7 @@ const NOT_FOUND = "I could not find trustworthy information you have access to t
  * its own port, so swapping the embedder, reranker or LLM is a config change:
  *
  *   embed -> search -> gate -> [rerank] -> off-topic filter
- *     retrieval mode: -> best match (the top chunk is the response)
+ *     retrieval mode: -> best match (the top chunk is the response) -> + amending documents
  *     llm mode:       -> related documents -> other versions -> resolve authority
  *                     -> prompt -> generate -> finalize (sources + number check)
  *
@@ -197,20 +200,36 @@ export class AnswerService {
       debug.offTopic = searched.chunks.filter((c) => !isOnTopic(c));
     }
 
+    const keyOf = (c: ScoredChunk) => `${c.source.documentId}@${c.source.version}`;
+
     // 5 (retrieval mode). The best remaining chunk is the response: reranker
-    //    order when reranking, else search order, preferring a current version. No LLM.
+    //    order when reranking, else search order, preferring a current version.
+    //    Then any current document that amends it (e.g. the approval matrix
+    //    for the vendor policy) is appended via the authority relations. No LLM.
     if (mode === "retrieval") {
       const { chunk: top, reason } = pickBestMatch(onTopic, question);
       debug.best = top;
       debug.bestReason = reason;
-      debug.evidence = resolveEvidence([top]);
+      let amendments: Amendment[] = [];
+      if (relatedChunks > 0) {
+        const related = await this.search.related(scope, {
+          embedding: embedded.vector,
+          documentIds: [top.source.documentId],
+          skipVersions: [keyOf(top)],
+          perVersion: relatedChunks,
+          includeStatuses: searchOpts.includeStatuses,
+          asOf,
+        });
+        amendments = amendmentsOf(top, related.chunks);
+        debug.related = { chunks: amendments.map((a) => a.chunk), ms: related.ms };
+      }
+      debug.evidence = resolveEvidence([top, ...debug.related.chunks]);
       hooks.onStage?.("matched", debug);
-      return done(bestMatchAnswer(top, debug.evidence[0]!, debug.rerank?.scores[top.chunkId] ?? null));
+      return done(bestMatchAnswer(top, debug.evidence, debug.rerank?.scores ?? {}, amendments));
     }
 
     // 5. Documents that amend or qualify the ones found. Not off-topic
     //    filtered: a change to a policy applies whatever its own cosine.
-    const keyOf = (c: ScoredChunk) => `${c.source.documentId}@${c.source.version}`;
     if (relatedChunks > 0) {
       debug.related = await this.search.related(scope, {
         embedding: embedded.vector,

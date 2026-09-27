@@ -53,12 +53,12 @@ const opts = (over: Partial<AskOptions> = {}): AskOptions => ({
   ...over,
 });
 
-function build(chunks: ScoredChunk[]) {
+function build(chunks: ScoredChunk[], related: ScoredChunk[] = []) {
   const queries: SearchQuery[] = [];
   const store = {
     search: async (_: AccessScope, q: SearchQuery) => (queries.push(q), chunks.slice(0, q.topK)),
     versions: async () => [],
-    related: async () => [],
+    related: async () => related,
   };
   const llm = new FakeLlm();
   const service = new AnswerService(
@@ -146,6 +146,37 @@ describe("retrieval mode", () => {
     const then = await service.ask(scope, "what was vendor approval threshold before", retrieval({ rerank: { pool: 2, minScore: 0 } }));
     expect(then.answer.match!.chunkId).toBe("POL@0.9#0");
     expect(then.answer.status).toBe("qualified");
+  });
+
+  it("appends a current document that amends the best match, and nothing else related", async () => {
+    const matrix = {
+      ...chunk("MTX", "below 50,000: budget owner. 50,000 to 249,999: VP and Finance Controller", 0.4),
+      relations: [{ kind: "amends" as const, documentId: "VENDOR", version: "1.0", scope: "financial approval thresholds" }],
+    };
+    const memo = {
+      ...chunk("MEMO", "renewals below 100,000 may use the standard template", 0.4),
+      relations: [{ kind: "qualifies" as const, documentId: "VENDOR", version: "1.0", scope: "legal review" }],
+    };
+    const { service } = build(pool, [matrix, memo]);
+
+    const { answer, debug } = await service.ask(scope, "vendor approval", retrieval({ relatedChunks: 1 }));
+
+    expect(answer.match!.chunkId).toBe("VENDOR@1.0#0");
+    expect(answer.amendments).toEqual([expect.objectContaining({ chunkId: "MTX@1.0#0", scope: "financial approval thresholds", rerankScore: null })]);
+    expect(answer.text).toBe(
+      'vendor approval requires procurement sign off\n\nAmended by MTX v1.0 "MTX" (financial approval thresholds):\nbelow 50,000: budget owner. 50,000 to 249,999: VP and Finance Controller',
+    );
+    expect(answer.sources.map((s) => s.source.documentId)).toEqual(["VENDOR", "MTX"]);
+    expect(answer.status).toBe("answered");
+    expect(debug.related.chunks.map((c) => c.source.documentId)).toEqual(["MTX"]);
+  });
+
+  it("appends nothing when related documents are turned off", async () => {
+    const matrix = { ...chunk("MTX", "thresholds", 0.4), relations: [{ kind: "amends" as const, documentId: "VENDOR", version: "1.0", scope: "thresholds" }] };
+    const { service } = build(pool, [matrix]);
+    const { answer } = await service.ask(scope, "vendor approval", retrieval({ relatedChunks: 0 }));
+    expect(answer.amendments).toBeUndefined();
+    expect(answer.text).toBe("vendor approval requires procurement sign off");
   });
 
   it("returns no chunk when every reranked chunk is below the floor", async () => {

@@ -30,6 +30,8 @@ export type Answer = {
   sources: Source[];
   /** Why the answer was downgraded or refused. Safe to show: no document text. */
   warnings: string[];
-  /** retrieval mode only: the best chunk, whose text is `text`. */
+  /** retrieval mode only: the best chunk, whose text starts `text`. */
   match?: Match;
+  /** retrieval mode only: current documents that amend the match's document, appended to `text`. */
+  amendments?: Array<Match & { scope: string }>;
 };
