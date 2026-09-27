@@ -52,7 +52,7 @@ Most RAG demos answer confidently. Enterprise RAG has to answer **correctly, for
 flowchart LR
     Q[Question + user id] --> I[Identity<br/>server-side groups]
     I --> E[Embed query<br/>arctic-embed-l v2, CPU]
-    E --> S[Hybrid search<br/>vector + full-text, RRF<br/>ACL + lifecycle in SQL]
+    E --> S[Hybrid search<br/>vector + full-text]
     S --> G{Evidence gate<br/>no LLM}
     G -- too weak --> R[Refuse safely]
     G -- ok --> RR[Cross-encoder rerank<br/>pool 8 -> top 3]
